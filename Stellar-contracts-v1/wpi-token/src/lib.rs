@@ -20,6 +20,7 @@ pub const DECIMALS: u32 = 7;
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
+    ProposedAdmin,
     VolumeLimitAdmin,
     Paused,
     CircuitBreaker,
@@ -80,6 +81,7 @@ pub enum Error {
     CircuitBreakerActive = 9,
     InvalidAmount = 10,
     InvalidExpirationLedger = 11,
+    NoProposedAdmin = 12,
 }
 
 #[contractevent]
@@ -172,6 +174,24 @@ fn write_volume_limit_admin(env: &Env, admin: &Address) {
 
 fn write_admin(env: &Env, admin: &Address) {
     env.storage().instance().set(&DataKey::Admin, admin);
+}
+
+fn read_proposed_admin(env: &Env) -> Option<Address> {
+    env.storage()
+        .instance()
+        .get::<DataKey, Address>(&DataKey::ProposedAdmin)
+}
+
+fn write_proposed_admin(env: &Env, proposed: &Address) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ProposedAdmin, proposed);
+}
+
+fn remove_proposed_admin(env: &Env) {
+    env.storage()
+        .instance()
+        .remove(&DataKey::ProposedAdmin);
 }
 
 fn is_paused(env: &Env) -> bool {
@@ -466,6 +486,10 @@ impl WpiToken {
         read_admin(&env)
     }
 
+    pub fn proposed_admin(env: Env) -> Option<Address> {
+        read_proposed_admin(&env)
+    }
+
     pub fn volume_limit_admin(env: Env) -> Address {
         read_volume_limit_admin(&env)
     }
@@ -725,9 +749,17 @@ impl WpiToken {
         Ok(true)
     }
 
-    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+    pub fn propose_admin(env: Env, proposed: Address) -> Result<(), Error> {
         require_admin(&env);
-        write_admin(&env, &new_admin);
+        write_proposed_admin(&env, &proposed);
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let proposed = read_proposed_admin(&env).ok_or(Error::NoProposedAdmin)?;
+        proposed.require_auth();
+        write_admin(&env, &proposed);
+        remove_proposed_admin(&env);
         Ok(())
     }
 
