@@ -403,3 +403,90 @@ proptest! {
         assert_supply_invariant(&client, &users);
     }
 }
+
+#[test]
+fn test_propose_admin_does_not_immediately_change_admin() {
+    let env = Env::default();
+    let (admin, client, _user) = setup(&env, 100, 100, 10);
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&new_admin);
+    assert_eq!(client.admin(), admin);
+    assert_eq!(client.proposed_admin(), Some(new_admin));
+}
+
+#[test]
+fn test_accept_admin_transfers_ownership() {
+    let env = Env::default();
+    let (admin, client, _user) = setup(&env, 100, 100, 10);
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&new_admin);
+    assert_eq!(client.proposed_admin(), Some(new_admin.clone()));
+    client.accept_admin();
+    assert_eq!(client.admin(), new_admin);
+    assert_eq!(client.proposed_admin(), None);
+}
+
+#[test]
+#[should_panic]
+fn test_unauthorized_acceptance_fails() {
+    let env = Env::default();
+    let (admin, client, _user) = setup(&env, 100, 100, 10);
+    let new_admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    client.propose_admin(&new_admin);
+    client
+        .mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "accept_admin",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .accept_admin();
+}
+
+#[test]
+fn test_accept_admin_fails_if_no_proposal() {
+    let env = Env::default();
+    let (admin, client, _user) = setup(&env, 100, 100, 10);
+    let result = client.try_accept_admin();
+    assert_eq!(result, Err(Ok(Error::NoProposedAdmin)));
+}
+
+#[test]
+fn test_existing_admin_retains_privileges_until_acceptance() {
+    let env = Env::default();
+    let (admin, client, _user) = setup(&env, 100, 100, 10);
+    let new_admin = Address::generate(&env);
+    
+    // Propose transfer
+    client.propose_admin(&new_admin);
+    
+    // Existing admin can still configure volume limits
+    client.configure_volume_limits(&200, &200, &20);
+    assert_eq!(
+        client.volume_limit_config().unwrap(),
+        VolumeLimitConfig {
+            mint_limit: 200,
+            burn_limit: 200,
+            window_seconds: 20,
+        }
+    );
+    
+    // Accept transfer
+    client.accept_admin();
+    
+    // Now, old admin is no longer admin, so they cannot pause the contract
+    let result = client.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "set_paused",
+            args: (true,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]).try_set_paused(&true);
+    assert!(result.is_err());
+}
