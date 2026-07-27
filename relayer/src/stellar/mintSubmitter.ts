@@ -41,9 +41,10 @@ export class MintSubmitter {
       } else if ('rateLimited' in outcome) {
         this.store.updateDepositStatus(deposit.depositId, 'failed', {
           mintTxHash: outcome.txHash,
-          lastError: 'bridge volume limit triggered; waiting for multisig override',
+          lastError:
+            'mint rejected by the per-transaction mint cap or the bridge volume limit; waiting for multisig action',
         });
-        this.log.warn('mint blocked by bridge volume circuit breaker', {
+        this.log.warn('mint blocked by a bridge mint cap', {
           piTxId: deposit.piTxId,
           depositId: deposit.depositId,
           txHash: outcome.txHash,

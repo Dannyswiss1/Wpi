@@ -1,12 +1,15 @@
 use super::*;
 use proptest::prelude::*;
 use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke};
-use soroban_sdk::IntoVal;
+use soroban_sdk::{vec, Event as _, IntoVal};
 
 fn deposit_id(env: &Env, tag: u8) -> BytesN<32> {
     BytesN::from_array(env, &[tag; 32])
 }
 
+/// Configures the per-transaction mint ceiling at the rolling-window mint
+/// limit, so it never binds before the window limit does. Tests that exercise
+/// the per-transaction cap lower it explicitly.
 fn setup(
     env: &Env,
     mint_limit: i128,
@@ -21,6 +24,7 @@ fn setup(
     let client = WpiTokenClient::new(env, &contract_id);
     client.initialize(&admin);
     client.configure_volume_limits(&mint_limit, &burn_limit, &window_seconds);
+    client.configure_max_mint_per_tx(&mint_limit);
     (admin, client, user)
 }
 
@@ -34,16 +38,225 @@ fn bridge_operations_fail_closed_until_limits_are_configured() {
     let client = WpiTokenClient::new(&env, &contract_id);
     client.initialize(&admin);
 
-    let result = client.try_mint_from_deposit(&user, &1, &deposit_id(&env, 1));
+    // Both mint gates fail closed, and neither can be satisfied by
+    // configuring the other.
+    assert_eq!(
+        client.try_mint_from_deposit(&user, &1, &deposit_id(&env, 1)),
+        Err(Ok(Error::MintTxCapNotConfigured))
+    );
+    assert_eq!(
+        client.try_max_mint_per_tx(),
+        Err(Ok(Error::MintTxCapNotConfigured))
+    );
 
-    assert_eq!(result, Err(Ok(Error::VolumeLimitsNotConfigured)));
+    client.configure_max_mint_per_tx(&1_000);
+    assert_eq!(
+        client.try_mint_from_deposit(&user, &1, &deposit_id(&env, 1)),
+        Err(Ok(Error::VolumeLimitsNotConfigured))
+    );
     assert_eq!(client.balance(&user), 0);
+}
+
+#[test]
+fn mint_from_deposit_over_tx_cap_is_rejected_and_alert_is_committed() {
+    let env = Env::default();
+    let (_admin, client, user) = setup(&env, 1_000, 1_000, 86_400);
+    client.configure_max_mint_per_tx(&100);
+
+    let accepted = client.mint_from_deposit(&user, &101, &deposit_id(&env, 1));
+
+    // `env.events()` only holds the most recent invocation's events, so the
+    // alert is asserted before any other contract call.
+    let expected = MintTxCapExceeded {
+        to: user.clone(),
+        amount: 101,
+        max_mint_per_tx: 100,
+    };
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                expected.topics(&env),
+                expected.data(&env)
+            )
+        ]
+    );
+
+    assert!(!accepted);
+    assert_eq!(client.balance(&user), 0);
+    assert_eq!(client.total_supply(), 0);
+    // The rejected mint consumes no window capacity and does not burn the
+    // deposit id, so it can be retried once governance raises the ceiling.
+    assert_eq!(client.current_volume_window().minted, 0);
+    assert!(!client.is_deposit_processed(&deposit_id(&env, 1)));
+    // A per-transaction rejection is an input check, not a circuit breaker:
+    // the bridge keeps running for other deposits.
+    assert!(!client.paused());
+    assert!(!client.circuit_breaker_active());
+
+    client.mint_from_deposit(&user, &100, &deposit_id(&env, 2));
+    assert_eq!(client.balance(&user), 100);
+}
+
+#[test]
+fn mint_at_exactly_the_tx_cap_is_accepted() {
+    let env = Env::default();
+    let (_admin, client, user) = setup(&env, 1_000, 1_000, 86_400);
+    client.configure_max_mint_per_tx(&100);
+
+    assert!(client.mint_from_deposit(&user, &100, &deposit_id(&env, 1)));
+
+    assert_eq!(client.balance(&user), 100);
+    assert_eq!(client.current_volume_window().minted, 100);
+}
+
+#[test]
+fn admin_mint_cannot_bypass_the_tx_cap() {
+    let env = Env::default();
+    let (_admin, client, user) = setup(&env, 1_000, 1_000, 86_400);
+    client.configure_max_mint_per_tx(&100);
+
+    let accepted = client.mint(&user, &i128::MAX);
+
+    assert!(!accepted);
+    assert_eq!(client.balance(&user), 0);
+    assert_eq!(client.total_supply(), 0);
+    assert_eq!(client.current_volume_window().minted, 0);
+}
+
+/// The per-transaction ceiling does not replace the rolling window: a
+/// compromised key splitting one large mint into cap-sized mints still trips
+/// the window breaker.
+#[test]
+fn repeated_under_cap_mints_still_trip_the_window_breaker() {
+    let env = Env::default();
+    let (_admin, client, user) = setup(&env, 100, 1_000, 86_400);
+    client.configure_max_mint_per_tx(&40);
+
+    client.mint_from_deposit(&user, &40, &deposit_id(&env, 1));
+    client.mint_from_deposit(&user, &40, &deposit_id(&env, 2));
+    assert!(!client.paused());
+
+    client.mint_from_deposit(&user, &20, &deposit_id(&env, 3));
+
+    assert_eq!(client.balance(&user), 100);
+    assert!(client.paused());
+    assert!(client.circuit_breaker_active());
+}
+
+#[test]
+fn tx_cap_is_enforced_after_the_pause_and_replay_gates() {
+    let env = Env::default();
+    let (_admin, client, user) = setup(&env, 1_000, 1_000, 86_400);
+    client.configure_max_mint_per_tx(&100);
+    client.mint_from_deposit(&user, &50, &deposit_id(&env, 1));
+
+    // A replayed deposit is rejected as a replay even when it is also over
+    // the ceiling, and a paused contract rejects everything.
+    client.configure_max_mint_per_tx(&10);
+    assert_eq!(
+        client.try_mint_from_deposit(&user, &50, &deposit_id(&env, 1)),
+        Err(Ok(Error::DepositAlreadyProcessed))
+    );
+    client.set_paused(&true);
+    assert_eq!(
+        client.try_mint_from_deposit(&user, &50, &deposit_id(&env, 2)),
+        Err(Ok(Error::Paused))
+    );
+}
+
+#[test]
+fn invalid_tx_cap_configuration_is_rejected() {
+    let env = Env::default();
+    let (_admin, client, _user) = setup(&env, 100, 100, 86_400);
+
+    assert_eq!(
+        client.try_configure_max_mint_per_tx(&0),
+        Err(Ok(Error::InvalidMintTxCap))
+    );
+    assert_eq!(
+        client.try_configure_max_mint_per_tx(&-1),
+        Err(Ok(Error::InvalidMintTxCap))
+    );
+    assert_eq!(client.max_mint_per_tx(), 100);
+}
+
+#[test]
+#[should_panic]
+fn non_admin_signer_cannot_authenticate_configure_max_mint_per_tx() {
+    let env = Env::default();
+    let (_admin, client, _user) = setup(&env, 100, 100, 86_400);
+    let attacker = Address::generate(&env);
+
+    client
+        .mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "configure_max_mint_per_tx",
+                args: (&i128::MAX,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .configure_max_mint_per_tx(&i128::MAX);
+}
+
+/// The mint ceiling is owned by the volume-limit admin, so the bridge admin
+/// that signs mints cannot raise its own ceiling once the role is delegated.
+#[test]
+#[should_panic]
+fn bridge_admin_cannot_raise_the_tx_cap_after_rotation() {
+    let env = Env::default();
+    let (bridge_admin, client, _user) = setup(&env, 1_000, 1_000, 86_400);
+    let guardian = Address::generate(&env);
+    client.set_volume_limit_admin(&guardian);
+
+    client
+        .mock_auths(&[MockAuth {
+            address: &bridge_admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "configure_max_mint_per_tx",
+                args: (&i128::MAX,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .configure_max_mint_per_tx(&i128::MAX);
+}
+
+#[test]
+fn delegated_volume_limit_admin_can_raise_the_tx_cap() {
+    let env = Env::default();
+    let (_admin, client, user) = setup(&env, 10_000, 10_000, 86_400);
+    client.configure_max_mint_per_tx(&100);
+    let guardian = Address::generate(&env);
+    client.set_volume_limit_admin(&guardian);
+
+    assert!(!client.mint_from_deposit(&user, &500, &deposit_id(&env, 1)));
+
+    client
+        .mock_auths(&[MockAuth {
+            address: &guardian,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "configure_max_mint_per_tx",
+                args: (&500i128,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .configure_max_mint_per_tx(&500);
+
+    assert_eq!(client.max_mint_per_tx(), 500);
+    assert!(client.mint_from_deposit(&user, &500, &deposit_id(&env, 1)));
+    assert_eq!(client.balance(&user), 500);
 }
 
 #[test]
 fn mint_limit_trips_breaker_emits_event_and_halts_activity() {
     let env = Env::default();
-    let (admin, client, user) = setup(&env, 100, 1_000, 86_400);
+    let (_admin, client, user) = setup(&env, 100, 1_000, 86_400);
 
     client.mint_from_deposit(&user, &60, &deposit_id(&env, 1));
     client.mint_from_deposit(&user, &40, &deposit_id(&env, 2));
@@ -63,7 +276,7 @@ fn mint_limit_trips_breaker_emits_event_and_halts_activity() {
 #[test]
 fn mint_that_would_exceed_limit_is_rejected_but_alert_is_committed() {
     let env = Env::default();
-    let (admin, client, user) = setup(&env, 100, 1_000, 86_400);
+    let (_admin, client, user) = setup(&env, 100, 1_000, 86_400);
     client.mint_from_deposit(&user, &60, &deposit_id(&env, 1));
 
     let accepted = client.mint_from_deposit(&user, &41, &deposit_id(&env, 2));
@@ -81,7 +294,7 @@ fn mint_that_would_exceed_limit_is_rejected_but_alert_is_committed() {
 #[test]
 fn burn_limit_is_tracked_independently_and_halts_activity() {
     let env = Env::default();
-    let (admin, client, user) = setup(&env, 1_000, 100, 86_400);
+    let (_admin, client, user) = setup(&env, 1_000, 100, 86_400);
     let destination = BytesN::from_array(&env, &[9; 32]);
     client.mint_from_deposit(&user, &200, &deposit_id(&env, 1));
 
@@ -101,7 +314,7 @@ fn burn_limit_is_tracked_independently_and_halts_activity() {
 #[test]
 fn expired_window_resets_volume_before_next_operation() {
     let env = Env::default();
-    let (admin, client, user) = setup(&env, 100, 100, 10);
+    let (_admin, client, user) = setup(&env, 100, 100, 10);
     client.mint_from_deposit(&user, &60, &deposit_id(&env, 1));
 
     env.ledger().set_timestamp(1_011);
@@ -117,7 +330,7 @@ fn expired_window_resets_volume_before_next_operation() {
 #[test]
 fn rolling_window_counts_volume_across_time_buckets() {
     let env = Env::default();
-    let (admin, client, user) = setup(&env, 100, 100, 10);
+    let (_admin, client, user) = setup(&env, 100, 100, 10);
     client.mint_from_deposit(&user, &60, &deposit_id(&env, 1));
 
     env.ledger().set_timestamp(1_009);
@@ -131,7 +344,7 @@ fn rolling_window_counts_volume_across_time_buckets() {
 #[test]
 fn rolling_window_does_not_expire_volume_early_at_bucket_boundary() {
     let env = Env::default();
-    let (admin, client, user) = setup(&env, 100, 100, 86_400);
+    let (_admin, client, user) = setup(&env, 100, 100, 86_400);
     env.ledger().set_timestamp(3_599);
     client.mint_from_deposit(&user, &60, &deposit_id(&env, 1));
 
@@ -147,7 +360,7 @@ fn rolling_window_does_not_expire_volume_early_at_bucket_boundary() {
 #[test]
 fn only_override_can_lift_a_tripped_circuit_breaker() {
     let env = Env::default();
-    let (admin, client, user) = setup(&env, 50, 100, 86_400);
+    let (_admin, client, user) = setup(&env, 50, 100, 86_400);
     client.mint_from_deposit(&user, &50, &deposit_id(&env, 1));
 
     let ordinary_unpause = client.try_set_paused(&false);
@@ -278,7 +491,7 @@ fn bridge_admin_cannot_authenticate_as_volume_limit_admin_after_rotation() {
 #[test]
 fn invalid_limit_configuration_is_rejected() {
     let env = Env::default();
-    let (admin, client, _user) = setup(&env, 10, 10, 10);
+    let (_admin, client, _user) = setup(&env, 10, 10, 10);
 
     assert_eq!(
         client.try_configure_volume_limits(&0, &10, &10),
@@ -293,7 +506,7 @@ fn invalid_limit_configuration_is_rejected() {
 #[test]
 fn deposit_idempotency_is_preserved() {
     let env = Env::default();
-    let (admin, client, user) = setup(&env, 1_000, 1_000, 86_400);
+    let (_admin, client, user) = setup(&env, 1_000, 1_000, 86_400);
     let deposit = deposit_id(&env, 1);
     client.mint_from_deposit(&user, &100, &deposit);
 
@@ -350,6 +563,7 @@ fn property_setup(
     let client = WpiTokenClient::new(env, &contract_id);
     client.initialize(&admin);
     client.configure_volume_limits(&i128::MAX, &i128::MAX, &86_400);
+    client.configure_max_mint_per_tx(&i128::MAX);
     (client, admin, users, destination)
 }
 
@@ -366,7 +580,7 @@ proptest! {
         operations in prop::collection::vec(operation_strategy(), 0..30)
     ) {
         let env = Env::default();
-        let (client, admin, users, destination) = property_setup(&env);
+        let (client, _admin, users, destination) = property_setup(&env);
 
         for operation in operations {
             match operation {
@@ -392,7 +606,7 @@ proptest! {
         transfer_amount in amount_strategy(),
     ) {
         let env = Env::default();
-        let (client, admin, users, _destination) = property_setup(&env);
+        let (client, _admin, users, _destination) = property_setup(&env);
         let user = users[user_index as usize].clone();
         client.mint(&user, &mint_amount);
         let before = client.balance(&user);
@@ -417,7 +631,7 @@ fn test_propose_admin_does_not_immediately_change_admin() {
 #[test]
 fn test_accept_admin_transfers_ownership() {
     let env = Env::default();
-    let (admin, client, _user) = setup(&env, 100, 100, 10);
+    let (_admin, client, _user) = setup(&env, 100, 100, 10);
     let new_admin = Address::generate(&env);
     client.propose_admin(&new_admin);
     assert_eq!(client.proposed_admin(), Some(new_admin.clone()));
@@ -430,7 +644,7 @@ fn test_accept_admin_transfers_ownership() {
 #[should_panic]
 fn test_unauthorized_acceptance_fails() {
     let env = Env::default();
-    let (admin, client, _user) = setup(&env, 100, 100, 10);
+    let (_admin, client, _user) = setup(&env, 100, 100, 10);
     let new_admin = Address::generate(&env);
     let attacker = Address::generate(&env);
     client.propose_admin(&new_admin);
@@ -450,7 +664,7 @@ fn test_unauthorized_acceptance_fails() {
 #[test]
 fn test_accept_admin_fails_if_no_proposal() {
     let env = Env::default();
-    let (admin, client, _user) = setup(&env, 100, 100, 10);
+    let (_admin, client, _user) = setup(&env, 100, 100, 10);
     let result = client.try_accept_admin();
     assert_eq!(result, Err(Ok(Error::NoProposedAdmin)));
 }
@@ -460,33 +674,35 @@ fn test_existing_admin_retains_privileges_until_acceptance() {
     let env = Env::default();
     let (admin, client, _user) = setup(&env, 100, 100, 10);
     let new_admin = Address::generate(&env);
-    
+
     // Propose transfer
     client.propose_admin(&new_admin);
-    
+
     // Existing admin can still configure volume limits
     client.configure_volume_limits(&200, &200, &20);
     assert_eq!(
-        client.volume_limit_config().unwrap(),
+        client.volume_limit_config(),
         VolumeLimitConfig {
             mint_limit: 200,
             burn_limit: 200,
             window_seconds: 20,
         }
     );
-    
+
     // Accept transfer
     client.accept_admin();
-    
+
     // Now, old admin is no longer admin, so they cannot pause the contract
-    let result = client.mock_auths(&[MockAuth {
-        address: &admin,
-        invoke: &MockAuthInvoke {
-            contract: &client.address,
-            fn_name: "set_paused",
-            args: (true,).into_val(&env),
-            sub_invokes: &[],
-        },
-    }]).try_set_paused(&true);
+    let result = client
+        .mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "set_paused",
+                args: (true,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_set_paused(&true);
     assert!(result.is_err());
 }

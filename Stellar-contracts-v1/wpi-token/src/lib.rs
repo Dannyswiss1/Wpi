@@ -6,6 +6,12 @@
 //! volume limits. Reaching either limit pauses the whole contract and emits a
 //! `VolumeLimitTriggered` event. The independent volume-limit admin must call
 //! `override_volume_limit` to reset the window and lift that circuit breaker.
+//!
+//! Mints are additionally capped per transaction by `max_mint_per_tx`. That
+//! ceiling is a fail-closed input check rather than a circuit breaker: a single
+//! oversized mint is rejected and alerted on (`MintTxCapExceeded`) without
+//! halting the bridge, while sustained over-minting is what trips the rolling
+//! window breaker above.
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, symbol_short, Address,
@@ -32,6 +38,9 @@ pub enum DataKey {
     VolumeLimitConfig,
     VolumeGeneration,
     VolumeBucket(u32),
+    // Stored separately from `VolumeLimitConfig` so an upgraded deployment
+    // that already holds a config value keeps decoding it.
+    MintTxCap,
 }
 
 #[contracttype]
@@ -82,6 +91,8 @@ pub enum Error {
     InvalidAmount = 10,
     InvalidExpirationLedger = 11,
     NoProposedAdmin = 12,
+    MintTxCapNotConfigured = 13,
+    InvalidMintTxCap = 14,
 }
 
 #[contractevent]
@@ -125,6 +136,23 @@ pub struct VolumeLimitsConfigured {
 pub struct VolumeLimitOverride {
     pub admin: Address,
     pub reset_at: u64,
+}
+
+/// Alert emitted when a single mint is rejected for exceeding
+/// `max_mint_per_tx`. The rejecting call still succeeds at the transaction
+/// layer (returning `false`) so this alert is committed rather than rolled
+/// back with the invocation.
+#[contractevent]
+pub struct MintTxCapExceeded {
+    #[topic]
+    pub to: Address,
+    pub amount: i128,
+    pub max_mint_per_tx: i128,
+}
+
+#[contractevent]
+pub struct MintTxCapConfigured {
+    pub max_mint_per_tx: i128,
 }
 
 #[contract]
@@ -189,9 +217,7 @@ fn write_proposed_admin(env: &Env, proposed: &Address) {
 }
 
 fn remove_proposed_admin(env: &Env) {
-    env.storage()
-        .instance()
-        .remove(&DataKey::ProposedAdmin);
+    env.storage().instance().remove(&DataKey::ProposedAdmin);
 }
 
 fn is_paused(env: &Env) -> bool {
@@ -300,6 +326,30 @@ fn read_volume_config(env: &Env) -> Result<VolumeLimitConfig, Error> {
         .instance()
         .get::<DataKey, VolumeLimitConfig>(&DataKey::VolumeLimitConfig)
         .ok_or(Error::VolumeLimitsNotConfigured)
+}
+
+fn read_mint_tx_cap(env: &Env) -> Result<i128, Error> {
+    env.storage()
+        .instance()
+        .get::<DataKey, i128>(&DataKey::MintTxCap)
+        .ok_or(Error::MintTxCapNotConfigured)
+}
+
+/// Checks a single mint against the per-transaction ceiling. Returns `false`
+/// after publishing `MintTxCapExceeded` when the amount is over the cap, so
+/// the caller can abandon the mint while still committing the alert.
+fn enforce_mint_tx_cap(env: &Env, to: &Address, amount: i128) -> Result<bool, Error> {
+    let max_mint_per_tx = read_mint_tx_cap(env)?;
+    if amount <= max_mint_per_tx {
+        return Ok(true);
+    }
+    MintTxCapExceeded {
+        to: to.clone(),
+        amount,
+        max_mint_per_tx,
+    }
+    .publish(env);
+    Ok(false)
 }
 
 fn read_volume_generation(env: &Env) -> u32 {
@@ -511,6 +561,25 @@ impl WpiToken {
         read_volume_window(&env, &config)
     }
 
+    pub fn max_mint_per_tx(env: Env) -> Result<i128, Error> {
+        read_mint_tx_cap(&env)
+    }
+
+    /// Sets the per-transaction mint ceiling. Gated on the same independent
+    /// volume-limit admin as the rolling-window limits, so a compromised
+    /// bridge admin cannot raise its own mint ceiling.
+    pub fn configure_max_mint_per_tx(env: Env, max_mint_per_tx: i128) -> Result<(), Error> {
+        require_volume_limit_admin(&env);
+        if max_mint_per_tx <= 0 {
+            return Err(Error::InvalidMintTxCap);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MintTxCap, &max_mint_per_tx);
+        MintTxCapConfigured { max_mint_per_tx }.publish(&env);
+        Ok(())
+    }
+
     pub fn configure_volume_limits(
         env: Env,
         mint_limit: i128,
@@ -652,8 +721,9 @@ impl WpiToken {
         Ok(true)
     }
 
-    /// Administrative mint. It uses the same bridge-wide mint counter as
-    /// `mint_from_deposit`, so no privileged mint path bypasses the cap.
+    /// Administrative mint. It uses the same per-transaction ceiling and the
+    /// same bridge-wide mint counter as `mint_from_deposit`, so no privileged
+    /// mint path bypasses the caps.
     pub fn mint(env: Env, to: Address, amount: i128) -> Result<bool, Error> {
         require_admin(&env);
         if is_paused(&env) {
@@ -661,6 +731,9 @@ impl WpiToken {
         }
         if amount <= 0 {
             return Err(Error::InvalidAmount);
+        }
+        if !enforce_mint_tx_cap(&env, &to, amount)? {
+            return Ok(false);
         }
         let balance = read_balance(&env, &to);
         let supply = read_total_supply(&env);
@@ -693,6 +766,12 @@ impl WpiToken {
         }
         if is_deposit_processed(&env, &pi_deposit_id) {
             return Err(Error::DepositAlreadyProcessed);
+        }
+        // Rejected before any window volume is consumed and before the deposit
+        // is marked processed, so an oversized deposit can be re-submitted
+        // after governance raises the ceiling.
+        if !enforce_mint_tx_cap(&env, &to, amount)? {
+            return Ok(false);
         }
         let balance = read_balance(&env, &to);
         let supply = read_total_supply(&env);

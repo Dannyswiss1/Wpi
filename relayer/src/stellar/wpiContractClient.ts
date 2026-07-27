@@ -14,7 +14,8 @@ export type MintOutcome =
  */
 export interface WpiContractClient {
   /**
-   * Submits `mint_from_deposit`. A committed circuit-breaker rejection is
+   * Submits `mint_from_deposit`. A committed cap rejection — either the
+   * per-transaction mint ceiling or the rolling-window circuit breaker — is
    * returned as `{ minted: false, rateLimited: true }` so the deposit stays
    * pending, while an idempotent retry returns `alreadyProcessed`.
    */
