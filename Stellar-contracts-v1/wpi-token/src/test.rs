@@ -43,7 +43,7 @@ fn bridge_operations_fail_closed_until_limits_are_configured() {
 #[test]
 fn mint_limit_trips_breaker_emits_event_and_halts_activity() {
     let env = Env::default();
-    let (admin, client, user) = setup(&env, 100, 1_000, 86_400);
+    let (_admin, client, user) = setup(&env, 100, 1_000, 86_400);
 
     client.mint_from_deposit(&user, &60, &deposit_id(&env, 1));
     client.mint_from_deposit(&user, &40, &deposit_id(&env, 2));
@@ -63,7 +63,7 @@ fn mint_limit_trips_breaker_emits_event_and_halts_activity() {
 #[test]
 fn mint_that_would_exceed_limit_is_rejected_but_alert_is_committed() {
     let env = Env::default();
-    let (admin, client, user) = setup(&env, 100, 1_000, 86_400);
+    let (_admin, client, user) = setup(&env, 100, 1_000, 86_400);
     client.mint_from_deposit(&user, &60, &deposit_id(&env, 1));
 
     let accepted = client.mint_from_deposit(&user, &41, &deposit_id(&env, 2));
@@ -81,7 +81,7 @@ fn mint_that_would_exceed_limit_is_rejected_but_alert_is_committed() {
 #[test]
 fn burn_limit_is_tracked_independently_and_halts_activity() {
     let env = Env::default();
-    let (admin, client, user) = setup(&env, 1_000, 100, 86_400);
+    let (_admin, client, user) = setup(&env, 1_000, 100, 86_400);
     let destination = BytesN::from_array(&env, &[9; 32]);
     client.mint_from_deposit(&user, &200, &deposit_id(&env, 1));
 
@@ -101,7 +101,7 @@ fn burn_limit_is_tracked_independently_and_halts_activity() {
 #[test]
 fn expired_window_resets_volume_before_next_operation() {
     let env = Env::default();
-    let (admin, client, user) = setup(&env, 100, 100, 10);
+    let (_admin, client, user) = setup(&env, 100, 100, 10);
     client.mint_from_deposit(&user, &60, &deposit_id(&env, 1));
 
     env.ledger().set_timestamp(1_011);
@@ -117,7 +117,7 @@ fn expired_window_resets_volume_before_next_operation() {
 #[test]
 fn rolling_window_counts_volume_across_time_buckets() {
     let env = Env::default();
-    let (admin, client, user) = setup(&env, 100, 100, 10);
+    let (_admin, client, user) = setup(&env, 100, 100, 10);
     client.mint_from_deposit(&user, &60, &deposit_id(&env, 1));
 
     env.ledger().set_timestamp(1_009);
@@ -131,7 +131,7 @@ fn rolling_window_counts_volume_across_time_buckets() {
 #[test]
 fn rolling_window_does_not_expire_volume_early_at_bucket_boundary() {
     let env = Env::default();
-    let (admin, client, user) = setup(&env, 100, 100, 86_400);
+    let (_admin, client, user) = setup(&env, 100, 100, 86_400);
     env.ledger().set_timestamp(3_599);
     client.mint_from_deposit(&user, &60, &deposit_id(&env, 1));
 
@@ -147,7 +147,7 @@ fn rolling_window_does_not_expire_volume_early_at_bucket_boundary() {
 #[test]
 fn only_override_can_lift_a_tripped_circuit_breaker() {
     let env = Env::default();
-    let (admin, client, user) = setup(&env, 50, 100, 86_400);
+    let (_admin, client, user) = setup(&env, 50, 100, 86_400);
     client.mint_from_deposit(&user, &50, &deposit_id(&env, 1));
 
     let ordinary_unpause = client.try_set_paused(&false);
@@ -278,7 +278,7 @@ fn bridge_admin_cannot_authenticate_as_volume_limit_admin_after_rotation() {
 #[test]
 fn invalid_limit_configuration_is_rejected() {
     let env = Env::default();
-    let (admin, client, _user) = setup(&env, 10, 10, 10);
+    let (_admin, client, _user) = setup(&env, 10, 10, 10);
 
     assert_eq!(
         client.try_configure_volume_limits(&0, &10, &10),
@@ -293,7 +293,7 @@ fn invalid_limit_configuration_is_rejected() {
 #[test]
 fn deposit_idempotency_is_preserved() {
     let env = Env::default();
-    let (admin, client, user) = setup(&env, 1_000, 1_000, 86_400);
+    let (_admin, client, user) = setup(&env, 1_000, 1_000, 86_400);
     let deposit = deposit_id(&env, 1);
     client.mint_from_deposit(&user, &100, &deposit);
 
@@ -366,7 +366,7 @@ proptest! {
         operations in prop::collection::vec(operation_strategy(), 0..30)
     ) {
         let env = Env::default();
-        let (client, admin, users, destination) = property_setup(&env);
+        let (client, _admin, users, destination) = property_setup(&env);
 
         for operation in operations {
             match operation {
@@ -392,7 +392,7 @@ proptest! {
         transfer_amount in amount_strategy(),
     ) {
         let env = Env::default();
-        let (client, admin, users, _destination) = property_setup(&env);
+        let (client, _admin, users, _destination) = property_setup(&env);
         let user = users[user_index as usize].clone();
         client.mint(&user, &mint_amount);
         let before = client.balance(&user);
@@ -417,7 +417,7 @@ fn test_propose_admin_does_not_immediately_change_admin() {
 #[test]
 fn test_accept_admin_transfers_ownership() {
     let env = Env::default();
-    let (admin, client, _user) = setup(&env, 100, 100, 10);
+    let (_admin, client, _user) = setup(&env, 100, 100, 10);
     let new_admin = Address::generate(&env);
     client.propose_admin(&new_admin);
     assert_eq!(client.proposed_admin(), Some(new_admin.clone()));
@@ -430,7 +430,7 @@ fn test_accept_admin_transfers_ownership() {
 #[should_panic]
 fn test_unauthorized_acceptance_fails() {
     let env = Env::default();
-    let (admin, client, _user) = setup(&env, 100, 100, 10);
+    let (_admin, client, _user) = setup(&env, 100, 100, 10);
     let new_admin = Address::generate(&env);
     let attacker = Address::generate(&env);
     client.propose_admin(&new_admin);
@@ -450,7 +450,7 @@ fn test_unauthorized_acceptance_fails() {
 #[test]
 fn test_accept_admin_fails_if_no_proposal() {
     let env = Env::default();
-    let (admin, client, _user) = setup(&env, 100, 100, 10);
+    let (_admin, client, _user) = setup(&env, 100, 100, 10);
     let result = client.try_accept_admin();
     assert_eq!(result, Err(Ok(Error::NoProposedAdmin)));
 }
@@ -460,33 +460,35 @@ fn test_existing_admin_retains_privileges_until_acceptance() {
     let env = Env::default();
     let (admin, client, _user) = setup(&env, 100, 100, 10);
     let new_admin = Address::generate(&env);
-    
+
     // Propose transfer
     client.propose_admin(&new_admin);
-    
+
     // Existing admin can still configure volume limits
     client.configure_volume_limits(&200, &200, &20);
     assert_eq!(
-        client.volume_limit_config().unwrap(),
+        client.volume_limit_config(),
         VolumeLimitConfig {
             mint_limit: 200,
             burn_limit: 200,
             window_seconds: 20,
         }
     );
-    
+
     // Accept transfer
     client.accept_admin();
-    
+
     // Now, old admin is no longer admin, so they cannot pause the contract
-    let result = client.mock_auths(&[MockAuth {
-        address: &admin,
-        invoke: &MockAuthInvoke {
-            contract: &client.address,
-            fn_name: "set_paused",
-            args: (true,).into_val(&env),
-            sub_invokes: &[],
-        },
-    }]).try_set_paused(&true);
+    let result = client
+        .mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "set_paused",
+                args: (true,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_set_paused(&true);
     assert!(result.is_err());
 }

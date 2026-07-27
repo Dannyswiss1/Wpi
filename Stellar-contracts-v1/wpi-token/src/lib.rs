@@ -189,9 +189,7 @@ fn write_proposed_admin(env: &Env, proposed: &Address) {
 }
 
 fn remove_proposed_admin(env: &Env) {
-    env.storage()
-        .instance()
-        .remove(&DataKey::ProposedAdmin);
+    env.storage().instance().remove(&DataKey::ProposedAdmin);
 }
 
 fn is_paused(env: &Env) -> bool {
