@@ -44,7 +44,7 @@ export class MintSubmitter {
           lastError:
             'mint rejected by the per-transaction mint cap or the bridge volume limit; waiting for multisig action',
         });
-        this.log.warn('mint blocked by a bridge mint cap', {
+        this.log.warn('mint blocked by the per-transaction or rolling-window mint cap', {
           piTxId: deposit.piTxId,
           depositId: deposit.depositId,
           txHash: outcome.txHash,

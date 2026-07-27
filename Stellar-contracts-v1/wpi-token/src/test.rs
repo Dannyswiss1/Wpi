@@ -184,7 +184,7 @@ fn invalid_tx_cap_configuration_is_rejected() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn non_admin_signer_cannot_authenticate_configure_max_mint_per_tx() {
     let env = Env::default();
     let (_admin, client, _user) = setup(&env, 100, 100, 86_400);
@@ -206,7 +206,7 @@ fn non_admin_signer_cannot_authenticate_configure_max_mint_per_tx() {
 /// The mint ceiling is owned by the volume-limit admin, so the bridge admin
 /// that signs mints cannot raise its own ceiling once the role is delegated.
 #[test]
-#[should_panic]
+#[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn bridge_admin_cannot_raise_the_tx_cap_after_rotation() {
     let env = Env::default();
     let (bridge_admin, client, _user) = setup(&env, 1_000, 1_000, 86_400);
