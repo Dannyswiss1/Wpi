@@ -22,6 +22,8 @@ pub enum DataKey {
     Admin,
     ProposedAdmin,
     VolumeLimitAdmin,
+    Minter,
+    Pauser,
     Paused,
     CircuitBreaker,
     Balance(Address),
@@ -170,6 +172,50 @@ fn write_volume_limit_admin(env: &Env, admin: &Address) {
     env.storage()
         .instance()
         .set(&DataKey::VolumeLimitAdmin, admin);
+}
+
+fn read_minter(env: &Env) -> Address {
+    env.storage()
+        .instance()
+        .get::<DataKey, Address>(&DataKey::Minter)
+        // Backwards-compatible default for a deployment upgraded from
+        // pre-Issue-5 state, which does not contain this key yet.
+        .unwrap_or_else(|| read_admin(env))
+}
+
+/// Authenticates the current on-chain minter/burner from stored state and
+/// returns it. See [`require_admin`] for why this must not take the minter
+/// as an argument.
+fn require_minter(env: &Env) -> Address {
+    let minter = read_minter(env);
+    minter.require_auth();
+    minter
+}
+
+fn write_minter(env: &Env, minter: &Address) {
+    env.storage().instance().set(&DataKey::Minter, minter);
+}
+
+fn read_pauser(env: &Env) -> Address {
+    env.storage()
+        .instance()
+        .get::<DataKey, Address>(&DataKey::Pauser)
+        // Backwards-compatible default for a deployment upgraded from
+        // pre-Issue-5 state, which does not contain this key yet.
+        .unwrap_or_else(|| read_admin(env))
+}
+
+/// Authenticates the current on-chain pauser from stored state and returns
+/// it. See [`require_admin`] for why this must not take the pauser as an
+/// argument.
+fn require_pauser(env: &Env) -> Address {
+    let pauser = read_pauser(env);
+    pauser.require_auth();
+    pauser
+}
+
+fn write_pauser(env: &Env, pauser: &Address) {
+    env.storage().instance().set(&DataKey::Pauser, pauser);
 }
 
 fn write_admin(env: &Env, admin: &Address) {
@@ -441,9 +487,14 @@ impl WpiToken {
         }
         admin.require_auth();
         write_admin(&env, &admin);
-        // The deployer must rotate this role to governance/multisig before
-        // enabling bridge traffic if the bridge admin is a relayer key.
+        // Minter, pauser, and volume-limit-admin all default to the admin
+        // address. The deployer must rotate each of these independently
+        // (see README) before enabling bridge traffic if the admin is a
+        // relayer key, so a single compromised key cannot mint, pause, and
+        // reconfigure volume limits all at once.
         write_volume_limit_admin(&env, &admin);
+        write_minter(&env, &admin);
+        write_pauser(&env, &admin);
         set_paused(&env, false);
         set_circuit_breaker(&env, false);
     }
@@ -490,6 +541,14 @@ impl WpiToken {
 
     pub fn volume_limit_admin(env: Env) -> Address {
         read_volume_limit_admin(&env)
+    }
+
+    pub fn minter(env: Env) -> Address {
+        read_minter(&env)
+    }
+
+    pub fn pauser(env: Env) -> Address {
+        read_pauser(&env)
     }
 
     pub fn paused(env: Env) -> bool {
@@ -650,10 +709,10 @@ impl WpiToken {
         Ok(true)
     }
 
-    /// Administrative mint. It uses the same bridge-wide mint counter as
+    /// Minter-gated mint. It uses the same bridge-wide mint counter as
     /// `mint_from_deposit`, so no privileged mint path bypasses the cap.
     pub fn mint(env: Env, to: Address, amount: i128) -> Result<bool, Error> {
-        require_admin(&env);
+        require_minter(&env);
         if is_paused(&env) {
             return Err(Error::Paused);
         }
@@ -682,7 +741,7 @@ impl WpiToken {
         amount: i128,
         pi_deposit_id: BytesN<32>,
     ) -> Result<bool, Error> {
-        require_admin(&env);
+        require_minter(&env);
         if is_paused(&env) {
             return Err(Error::Paused);
         }
@@ -718,7 +777,7 @@ impl WpiToken {
         amount: i128,
         pi_destination: BytesN<32>,
     ) -> Result<bool, Error> {
-        require_admin(&env);
+        require_minter(&env);
         if is_paused(&env) {
             return Err(Error::Paused);
         }
@@ -770,8 +829,27 @@ impl WpiToken {
         Ok(())
     }
 
+    /// Rotates the independent minter/burner authority. Only the current
+    /// minter can transfer this role; the top-level admin cannot reclaim it
+    /// after it has been handed to a bridge multisig, so a compromised admin
+    /// key alone cannot re-seize mint power (see Issue #5).
+    pub fn set_minter(env: Env, new_minter: Address) -> Result<(), Error> {
+        require_minter(&env);
+        write_minter(&env, &new_minter);
+        Ok(())
+    }
+
+    /// Rotates the independent pause authority. Only the current pauser can
+    /// transfer this role. Keeping it separate from both the admin and the
+    /// minter means a compromised minter can still be halted by the pauser.
+    pub fn set_pauser(env: Env, new_pauser: Address) -> Result<(), Error> {
+        require_pauser(&env);
+        write_pauser(&env, &new_pauser);
+        Ok(())
+    }
+
     pub fn set_paused(env: Env, paused: bool) -> Result<(), Error> {
-        require_admin(&env);
+        require_pauser(&env);
         if !paused && is_circuit_breaker_active(&env) {
             return Err(Error::CircuitBreakerActive);
         }
