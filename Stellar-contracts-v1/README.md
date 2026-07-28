@@ -25,7 +25,7 @@ make build
 
 Artifacts: `Stellar-contracts-v1/target/wasm32-unknown-unknown/release/*.wasm`
 
-## Deploy
+## Deploy and Release
 
 Use the checked-in deployment scripts from the repository root. They build the
 WASM artifacts, upload each contract with the Stellar CLI, deploy from the
@@ -45,6 +45,18 @@ The testnet script deploys and initializes `wpi-token` and `mock-amm`; the AMM
 selects the network's real USDC SAC from the ledger network ID. The mainnet
 script deploys only `wpi-token` by default; set `DEPLOY_AMM=true` to deploy the
 AMM against mainnet USDC as well.
+
+### Contract Release Lifecycle
+
+This repository adopts a formal release lifecycle to ensure all deployments are auditable and reproducible:
+1. Build and test contracts (`make build`, `make test`).
+2. Generate SHA-256 checksums (`make checksum`).
+3. Commit and push a git release tag (`vMAJOR.MINOR.PATCH`).
+4. Rely on automated CI to generate draft GitHub Releases with attached WASM artifacts.
+5. Deploy verified WASM binaries using contract IDs recorded in the release.
+
+For full guidelines on Semantic Versioning (SemVer), reproducibility verification, and release tagging steps, refer to the [Release Management and Versioning Strategy](../docs/release-management.md).
+
 
 ### Emergency pause behavior
 
