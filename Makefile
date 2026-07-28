@@ -1,6 +1,6 @@
 CONTRACT_DIR := Stellar-contracts-v1
 
-.PHONY: all clean build test deploy-testnet deploy-mainnet
+.PHONY: all clean build test deploy-testnet deploy-mainnet checksum
 
 all: build test
 
@@ -18,3 +18,7 @@ deploy-testnet:
 
 deploy-mainnet:
 	bash scripts/deploy_mainnet.sh
+
+checksum:
+	bash scripts/checksum_artifacts.sh
+

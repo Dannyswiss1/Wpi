@@ -25,7 +25,7 @@ make build
 
 Artifacts: `Stellar-contracts-v1/target/wasm32-unknown-unknown/release/*.wasm`
 
-## Deploy
+## Deploy and Release
 
 Use the checked-in deployment scripts from the repository root. They build the
 WASM artifacts, upload each contract with the Stellar CLI, deploy from the

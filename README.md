@@ -8,9 +8,12 @@ Soroban contracts and operational docs for the **wrapped Pi (wPi)** bridge token
 |------|-------------|
 | [`Stellar-contracts-v1/`](./Stellar-contracts-v1/) | `wpi-token` and test AMM contracts integrated with the real USDC SAC |
 | [`docs/proof-of-reserve.md`](./docs/proof-of-reserve.md) | Off-chain signed reserve attestation process |
+| [`docs/release-management.md`](./docs/release-management.md) | Release management, semantic versioning policy, and deployment artifact tracking |
 | [`docs/design/on-chain-reserve-oracle.md`](./docs/design/on-chain-reserve-oracle.md) | Medium-term on-chain oracle + mint invariant design |
 | [`scripts/por/`](./scripts/por/) | Attest / verify CLI (Node.js, no dependencies) |
 | [`attestations/`](./attestations/) | PoR feed (`latest.json` is **demo** until production cadence; schema + attestor pubkey) |
+| [`CHANGELOG.md`](./CHANGELOG.md) | Centralized project changelog and release history |
+
 
 ## Quick start (contracts)
 
