@@ -33,7 +33,7 @@ Pi custody balance
                                                               |
                                                               | get_reserve()
                                                               v
-                                                     wpi-token.mint()
+                                                     wpi-token.mint_from_deposit()
                                                      checks:
                                                        total_supply + amount
                                                          <= reserve * (1 - margin)
@@ -95,7 +95,12 @@ Add optional oracle binding (upgrade or new initialize param):
 ```rust
 fn set_reserve_oracle(admin: Address, oracle: Option<Address>);
 
-fn mint(admin: Address, to: Address, amount: i128) -> Result<(), Error> {
+fn mint_from_deposit(
+    admin: Address,
+    to: Address,
+    amount: i128,
+    pi_deposit_id: BytesN<32>,
+) -> Result<(), Error> {
     // existing admin auth...
     if let Some(oracle) = read_oracle(&env) {
         let snap = oracle_client.get_reserve();

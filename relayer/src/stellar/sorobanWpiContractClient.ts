@@ -105,10 +105,11 @@ export class SorobanWpiContractClient implements WpiContractClient {
 
     const events: BurnEvent[] = [];
     for (const event of response.events) {
-      const nonceTopic = event.topic[1];
-      if (!nonceTopic) continue;
-      const nonce = Number(scValToNative(nonceTopic) as bigint);
+      const redemptionTopic = event.topic[1];
+      if (!redemptionTopic) continue;
+      const redemptionId = Buffer.from(scValToNative(redemptionTopic) as Buffer).toString('hex');
       const data = scValToNative(event.value) as {
+        nonce: bigint;
         from: string;
         amount: bigint;
         pi_destination: Buffer;
@@ -117,7 +118,8 @@ export class SorobanWpiContractClient implements WpiContractClient {
         ledger: event.ledger,
         txHash: event.txHash,
         eventId: event.id,
-        nonce,
+        redemptionId,
+        nonce: Number(data.nonce),
         from: data.from,
         amountStroops: data.amount.toString(),
         piDestination: piDestinationToStrKey(Buffer.from(data.pi_destination)),
