@@ -113,7 +113,7 @@ fn mint_at_exactly_the_tx_cap_is_accepted() {
 }
 
 #[test]
-fn admin_mint_cannot_bypass_the_tx_cap() {
+fn minter_mint_cannot_bypass_the_tx_cap() {
     let env = Env::default();
     let (_admin, client, user) = setup(&env, 1_000, 1_000, 86_400);
     client.configure_max_mint_per_tx(&100);
@@ -203,19 +203,22 @@ fn non_admin_signer_cannot_authenticate_configure_max_mint_per_tx() {
         .configure_max_mint_per_tx(&i128::MAX);
 }
 
-/// The mint ceiling is owned by the volume-limit admin, so the bridge admin
-/// that signs mints cannot raise its own ceiling once the role is delegated.
+/// The mint ceiling is owned by the volume-limit admin, so the hot minter key
+/// that signs bridge mints cannot raise its own ceiling once the roles are
+/// delegated to separate holders.
 #[test]
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
-fn bridge_admin_cannot_raise_the_tx_cap_after_rotation() {
+fn minter_cannot_raise_the_tx_cap_after_rotation() {
     let env = Env::default();
-    let (bridge_admin, client, _user) = setup(&env, 1_000, 1_000, 86_400);
+    let (_admin, client, _user) = setup(&env, 1_000, 1_000, 86_400);
+    let bridge_minter = Address::generate(&env);
     let guardian = Address::generate(&env);
+    client.set_minter(&bridge_minter);
     client.set_volume_limit_admin(&guardian);
 
     client
         .mock_auths(&[MockAuth {
-            address: &bridge_admin,
+            address: &bridge_minter,
             invoke: &MockAuthInvoke {
                 contract: &client.address,
                 fn_name: "configure_max_mint_per_tx",
@@ -489,6 +492,164 @@ fn bridge_admin_cannot_authenticate_as_volume_limit_admin_after_rotation() {
 }
 
 #[test]
+fn minter_role_is_independent_from_bridge_admin() {
+    let env = Env::default();
+    let (admin, client, user) = setup(&env, 50, 100, 86_400);
+    let bridge_ops = Address::generate(&env);
+    client.set_minter(&bridge_ops);
+
+    assert_eq!(client.minter(), bridge_ops);
+    assert_eq!(client.admin(), admin);
+
+    client.mint(&user, &1);
+    assert_eq!(client.balance(&user), 1);
+}
+
+/// After the minter role is rotated away, the top-level admin can no longer
+/// authenticate mint calls, even though it still holds the Admin role.
+#[test]
+#[should_panic]
+fn admin_cannot_authenticate_mint_after_minter_rotation() {
+    let env = Env::default();
+    let (admin, client, user) = setup(&env, 50, 100, 86_400);
+    let bridge_ops = Address::generate(&env);
+    client.set_minter(&bridge_ops);
+
+    client
+        .mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "mint",
+                args: (&user, &1i128).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .mint(&user, &1);
+}
+
+/// Mirrors `bridge_admin_cannot_authenticate_as_volume_limit_admin_after_rotation`:
+/// once the minter role is handed to a dedicated address, the admin cannot
+/// reclaim it by calling `set_minter` itself, so a compromised admin key
+/// alone cannot re-seize mint power.
+#[test]
+#[should_panic]
+fn admin_cannot_reclaim_minter_role() {
+    let env = Env::default();
+    let (admin, client, _user) = setup(&env, 50, 100, 86_400);
+    let bridge_ops = Address::generate(&env);
+    client.set_minter(&bridge_ops);
+    let takeover = Address::generate(&env);
+
+    client
+        .mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "set_minter",
+                args: (&takeover,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .set_minter(&takeover);
+}
+
+#[test]
+fn pauser_role_is_independent_from_bridge_admin_and_minter() {
+    let env = Env::default();
+    let (admin, client, _user) = setup(&env, 50, 100, 86_400);
+    let bridge_ops = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    client.set_minter(&bridge_ops);
+    client.set_pauser(&guardian);
+
+    assert_eq!(client.pauser(), guardian);
+    assert_eq!(client.admin(), admin);
+    assert_eq!(client.minter(), bridge_ops);
+
+    client.set_paused(&true);
+    assert!(client.paused());
+    client.set_paused(&false);
+    assert!(!client.paused());
+}
+
+/// Once the pauser role is rotated away, neither the admin nor the minter
+/// can authenticate `set_paused` — only the independent pauser can, so a
+/// compromised minter cannot also silence the emergency stop.
+#[test]
+#[should_panic]
+fn admin_cannot_authenticate_set_paused_after_pauser_rotation() {
+    let env = Env::default();
+    let (admin, client, _user) = setup(&env, 50, 100, 86_400);
+    let guardian = Address::generate(&env);
+    client.set_pauser(&guardian);
+
+    client
+        .mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "set_paused",
+                args: (true,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .set_paused(&true);
+}
+
+/// Contracts initialized before this role split (Issue #5) never wrote a
+/// `Minter`/`Pauser` key. `read_minter`/`read_pauser` must keep tracking the
+/// live admin for those deployments until they explicitly rotate, exactly
+/// like the pre-existing `VolumeLimitAdmin` migration fallback.
+#[test]
+fn upgraded_deployment_without_stored_minter_or_pauser_falls_back_to_admin() {
+    let env = Env::default();
+    let (admin, client, user) = setup(&env, 100, 100, 10);
+    env.as_contract(&client.address, || {
+        env.storage().instance().remove(&DataKey::Minter);
+        env.storage().instance().remove(&DataKey::Pauser);
+    });
+
+    assert_eq!(client.minter(), admin);
+    assert_eq!(client.pauser(), admin);
+
+    client.mint(&user, &10);
+    assert_eq!(client.balance(&user), 10);
+    client.set_paused(&true);
+    assert!(client.paused());
+}
+
+/// Every deployed contract has a valid Soroban `Address`, the same type
+/// used for every role here. Registering a second contract instance and
+/// using its address as the admin stands in for a real multisig/policy
+/// contract (e.g. one built on CAP-0071 / `SOROBAN_CREDENTIALS_ADDRESS_V2`
+/// account delegation): this does not re-verify Soroban's own
+/// auth-delegation host logic (out of scope for this contract's test
+/// suite), it verifies that wpi-token never special-cases a role's
+/// `Address` as an externally-owned account -- every role can be a
+/// contract address end to end.
+#[test]
+fn every_role_can_be_a_contract_address_not_only_an_eoa() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let policy_contract = env.register(WpiToken, ());
+    let contract_id = env.register(WpiToken, ());
+    let client = WpiTokenClient::new(&env, &contract_id);
+    client.initialize(&policy_contract);
+    client.configure_volume_limits(&i128::MAX, &i128::MAX, &86_400);
+    client.configure_max_mint_per_tx(&i128::MAX);
+
+    assert_eq!(client.admin(), policy_contract);
+    assert_eq!(client.minter(), policy_contract);
+    assert_eq!(client.pauser(), policy_contract);
+    assert_eq!(client.volume_limit_admin(), policy_contract);
+
+    let user = Address::generate(&env);
+    client.mint(&user, &10);
+    assert_eq!(client.balance(&user), 10);
+}
+
+#[test]
 fn invalid_limit_configuration_is_rejected() {
     let env = Env::default();
     let (_admin, client, _user) = setup(&env, 10, 10, 10);
@@ -692,17 +853,39 @@ fn test_existing_admin_retains_privileges_until_acceptance() {
     // Accept transfer
     client.accept_admin();
 
-    // Now, old admin is no longer admin, so they cannot pause the contract
+    // Now, old admin is no longer admin, so they cannot propose another
+    // admin transfer (pause/mint are gated by the separate pauser/minter
+    // roles, not the Admin role -- see role-separation tests above).
     let result = client
         .mock_auths(&[MockAuth {
             address: &admin,
             invoke: &MockAuthInvoke {
                 contract: &client.address,
-                fn_name: "set_paused",
-                args: (true,).into_val(&env),
+                fn_name: "propose_admin",
+                args: (&admin,).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .try_set_paused(&true);
+        .try_propose_admin(&admin);
     assert!(result.is_err());
+}
+
+#[test]
+fn decimals_matches_pi_network_native_precision() {
+    let env = Env::default();
+    let (_admin, client, _user) = setup(&env, 100, 100, 10);
+
+    assert_eq!(DECIMALS, 7);
+    assert_eq!(client.decimals(), DECIMALS);
+
+    // 1 Pi expressed in stroops must equal 10^DECIMALS.
+    let stroops_per_pi: i128 = 10i128.pow(DECIMALS);
+    assert_eq!(stroops_per_pi, 10_000_000);
+
+    // A representative Pi Horizon deposit of "3.1415926" Pi should produce
+    // exactly 31_415_926 stroops when converted with 7 decimal places.
+    let whole: i128 = 3;
+    let fraction: i128 = 1_415_926;
+    let expected_stroops = whole * stroops_per_pi + fraction;
+    assert_eq!(expected_stroops, 31_415_926);
 }
