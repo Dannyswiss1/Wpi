@@ -42,7 +42,7 @@ Fill in `.env`:
 | `STELLAR_SOROBAN_RPC_URL` | `https://soroban-testnet.stellar.org` |
 | `STELLAR_NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` |
 | `WPI_CONTRACT_ID` | The deployed `wpi-token` contract id |
-| `BRIDGE_STELLAR_ADMIN_SECRET_KEY` | The contract admin's secret key |
+| `BRIDGE_STELLAR_ADMIN_SECRET_KEY` | Secret key holding the contract's `Minter` role (defaults to the deploy admin; see `Stellar-contracts-v1/README.md`) |
 | `PI_CONFIRMATION_DEPTH` | Leave at the default (30) or lower for a faster demo |
 
 ## 2. Start the relayer

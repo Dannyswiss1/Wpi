@@ -46,24 +46,47 @@ selects the network's real USDC SAC from the ledger network ID. The mainnet
 script deploys only `wpi-token` by default; set `DEPLOY_AMM=true` to deploy the
 AMM against mainnet USDC as well.
 
-### Contract Release Lifecycle
+### Admin roles: minter, pauser, upgrader/admin, volume-limit admin
 
-This repository adopts a formal release lifecycle to ensure all deployments are auditable and reproducible:
-1. Build and test contracts (`make build`, `make test`).
-2. Generate SHA-256 checksums (`make checksum`).
-3. Commit and push a git release tag (`vMAJOR.MINOR.PATCH`).
-4. Rely on automated CI to generate draft GitHub Releases with attached WASM artifacts.
-5. Deploy verified WASM binaries using contract IDs recorded in the release.
+`wpi-token` splits privileged access into four independent roles instead of a
+single admin key. Each role is a Soroban `Address`, so it can be a plain
+account **or a contract address** — a Soroban multisig/policy contract, or an
+account using Protocol 27 (CAP-0071) native authentication delegation
+(`SOROBAN_CREDENTIALS_ADDRESS_V2`). The contract never special-cases which
+kind of address a role holds; `require_auth()` is uniform for both.
 
-For full guidelines on Semantic Versioning (SemVer), reproducibility verification, and release tagging steps, refer to the [Release Management and Versioning Strategy](../docs/release-management.md).
+| Role | Storage key | Gates | Rotated by |
+|---|---|---|---|
+| Admin | `Admin` | `propose_admin`/`accept_admin` (two-step), `upgrade` | Two-step: current admin proposes, proposed admin accepts |
+| Minter | `Minter` | `mint`, `mint_from_deposit`, `burn` | Current minter only (`set_minter`) |
+| Pauser | `Pauser` | `set_paused` | Current pauser only (`set_pauser`) |
+| Volume-limit admin | `VolumeLimitAdmin` | `configure_volume_limits`, `override_volume_limit`, `set_volume_limit_admin` | Current volume-limit admin only |
 
+All four default to the deployer's admin identity at `initialize`. **Rotate
+each of them independently to dedicated multisig/governance addresses before
+routing real bridge traffic** — see
+[`docs/design/admin-role-separation.md`](../docs/design/admin-role-separation.md)
+for the full policy and the migration plan for existing deployments.
+Deliberately, the top-level admin **cannot** reclaim the minter or pauser role
+by calling `set_minter`/`set_pauser` itself once it has been handed off; only
+the current holder of each role can rotate it. This means a compromised admin
+key alone cannot re-seize mint power, and a compromised minter can still be
+halted by the independent pauser:
+
+```bash
+stellar contract invoke --id "$WPI_CONTRACT_ID" --source "$ADMIN_IDENTITY" \
+  --network testnet -- set_minter --new_minter "$BRIDGE_OPS_MULTISIG"
+
+stellar contract invoke --id "$WPI_CONTRACT_ID" --source "$ADMIN_IDENTITY" \
+  --network testnet -- set_pauser --new_pauser "$GUARDIAN_MULTISIG"
+```
 
 ### Emergency pause behavior
 
 The pause flag is a full emergency stop for token state changes. While paused,
 `approve`, `transfer`, `transfer_from`, `mint`, and `burn` return `Paused` in
 both `wpi-token` and contracts built on `soroban-token-common`. Read-only calls
-remain available. Only an authorized admin can change the pause state; for a
+remain available. Only the authorized pauser can change the pause state; for a
 volume-limit halt, governance must use the auditable override flow described
 below before activity can resume.
 
@@ -134,7 +157,10 @@ Set backend env:
 - `STELLAR_NETWORK_PASSPHRASE` — Stellar testnet passphrase
 - `WPI_CONTRACT_ID` — deployed wPi contract ID
 - `USDC_CONTRACT_ID` — selected network USDC SAC (do not deploy it)
-- `BRIDGE_STELLAR_ADMIN_SECRET_KEY` — admin key that mints wPi (keep offline in production)
+- `BRIDGE_STELLAR_ADMIN_SECRET_KEY` — the relayer's mint key; it must hold the
+  `Minter` role (not necessarily the top-level `Admin` role — see
+  [role table above](#admin-roles-minter-pauser-upgraderadmin-volume-limit-admin))
+  and should be rotated to a dedicated multisig or delegated account in production
 
 ## Real USDC SAC
 
