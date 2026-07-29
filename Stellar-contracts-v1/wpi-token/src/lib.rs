@@ -14,6 +14,14 @@ use soroban_sdk::{
 
 const NAME: &str = "Wrapped Pi";
 const SYMBOL: &str = "wPI";
+/// Pi Network is an SCP fork of Stellar and exposes the same Horizon REST
+/// API. Native Pi amounts use 7 decimal places (1 Pi = 10_000_000 stroops),
+/// identical to Stellar's native asset convention.
+///
+/// Source: Pi Network Horizon API — the `amount` field in `/operations` and
+/// `/payments` responses uses a fixed 7-decimal string representation
+/// (e.g. "3.1415926"), consistent with Stellar's documented stroops model
+/// (https://developers.stellar.org/docs/learn/fundamentals/stellar-data-structures/assets#amount-precision).
 pub const DECIMALS: u32 = 7;
 
 #[contracttype]

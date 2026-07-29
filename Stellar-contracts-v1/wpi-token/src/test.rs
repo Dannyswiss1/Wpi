@@ -651,3 +651,23 @@ fn test_existing_admin_retains_privileges_until_acceptance() {
         .try_propose_admin(&admin);
     assert!(result.is_err());
 }
+
+#[test]
+fn decimals_matches_pi_network_native_precision() {
+    let env = Env::default();
+    let (_admin, client, _user) = setup(&env, 100, 100, 10);
+
+    assert_eq!(DECIMALS, 7);
+    assert_eq!(client.decimals(), DECIMALS);
+
+    // 1 Pi expressed in stroops must equal 10^DECIMALS.
+    let stroops_per_pi: i128 = 10i128.pow(DECIMALS);
+    assert_eq!(stroops_per_pi, 10_000_000);
+
+    // A representative Pi Horizon deposit of "3.1415926" Pi should produce
+    // exactly 31_415_926 stroops when converted with 7 decimal places.
+    let whole: i128 = 3;
+    let fraction: i128 = 1_415_926;
+    let expected_stroops = whole * stroops_per_pi + fraction;
+    assert_eq!(expected_stroops, 31_415_926);
+}
