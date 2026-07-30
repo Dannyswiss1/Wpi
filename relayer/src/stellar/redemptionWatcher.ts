@@ -5,8 +5,8 @@ import type { WpiContractClient } from './wpiContractClient.js';
 
 /**
  * Watches the wPi contract for `redemption_burned` events and releases the
- * corresponding native Pi via `PiPayoutClient`, deduping by the event's
- * globally-unique RPC id so a burn is never paid out twice.
+ * corresponding native Pi via `PiPayoutClient`, deduping by the contract's
+ * on-chain redemption ID so a burn is never paid out twice.
  */
 export class RedemptionWatcher {
   constructor(
@@ -26,9 +26,9 @@ export class RedemptionWatcher {
     const { events, nextLedger } = await this.contractClient.getRedemptionBurnEvents(since);
 
     for (const event of events) {
-      if (this.store.hasRedemption(event.eventId)) continue;
+      if (this.store.hasRedemption(event.redemptionId)) continue;
       this.store.upsertRedemption({
-        redemptionId: event.eventId,
+        redemptionId: event.redemptionId,
         nonce: event.nonce,
         amountStroops: event.amountStroops,
         piDestination: event.piDestination,
@@ -36,7 +36,7 @@ export class RedemptionWatcher {
         updatedAt: new Date().toISOString(),
       });
       this.log.info('observed wPi redemption burn, queued for Pi release', {
-        redemptionId: event.eventId,
+        redemptionId: event.redemptionId,
         piDestination: event.piDestination,
       });
     }

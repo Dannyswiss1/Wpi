@@ -7,6 +7,10 @@ fn deposit_id(env: &Env, tag: u8) -> BytesN<32> {
     BytesN::from_array(env, &[tag; 32])
 }
 
+fn redemption_id(env: &Env, tag: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[tag; 32])
+}
+
 fn setup(
     env: &Env,
     mint_limit: i128,
@@ -85,17 +89,33 @@ fn burn_limit_is_tracked_independently_and_halts_activity() {
     let destination = BytesN::from_array(&env, &[9; 32]);
     client.mint_from_deposit(&user, &200, &deposit_id(&env, 1));
 
-    client.burn(&user, &60, &destination);
-    client.burn(&user, &40, &destination);
+    client.burn(&user, &60, &destination, &redemption_id(&env, 1));
+    client.burn(&user, &40, &destination, &redemption_id(&env, 2));
 
     assert_eq!(client.balance(&user), 100);
     assert!(client.paused());
     assert_eq!(client.current_volume_window().burned, 100);
     assert_eq!(client.current_volume_window().minted, 200);
 
-    let blocked = client.try_burn(&user, &1, &destination);
+    let blocked = client.try_burn(&user, &1, &destination, &redemption_id(&env, 3));
     assert_eq!(blocked, Err(Ok(Error::Paused)));
     assert_eq!(client.balance(&user), 100);
+}
+
+#[test]
+fn burn_replay_is_rejected_for_the_same_redemption_id() {
+    let env = Env::default();
+    let (_admin, client, user) = setup(&env, 1_000, 1_000, 86_400);
+    let destination = BytesN::from_array(&env, &[9; 32]);
+    let redemption = redemption_id(&env, 1);
+    client.mint_from_deposit(&user, &200, &deposit_id(&env, 1));
+
+    client.burn(&user, &60, &destination, &redemption);
+
+    let replay = client.try_burn(&user, &40, &destination, &redemption);
+    assert_eq!(replay, Err(Ok(Error::RedemptionAlreadyProcessed)));
+    assert_eq!(client.balance(&user), 140);
+    assert_eq!(client.total_supply(), 140);
 }
 
 #[test]
@@ -181,12 +201,12 @@ fn non_admin_signer_cannot_authenticate_mint() {
             address: &attacker,
             invoke: &MockAuthInvoke {
                 contract: &client.address,
-                fn_name: "mint",
-                args: (&user, &1i128).into_val(&env),
+                fn_name: "mint_from_deposit",
+                args: (&user, &1i128, &deposit_id(&env, 1)).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .mint(&user, &1);
+        .mint_from_deposit(&user, &1, &deposit_id(&env, 1));
 }
 
 #[test]
@@ -285,7 +305,7 @@ fn minter_role_is_independent_from_bridge_admin() {
     assert_eq!(client.minter(), bridge_ops);
     assert_eq!(client.admin(), admin);
 
-    client.mint(&user, &1);
+    client.mint_from_deposit(&user, &1, &deposit_id(&env, 1));
     assert_eq!(client.balance(&user), 1);
 }
 
@@ -304,12 +324,12 @@ fn admin_cannot_authenticate_mint_after_minter_rotation() {
             address: &admin,
             invoke: &MockAuthInvoke {
                 contract: &client.address,
-                fn_name: "mint",
-                args: (&user, &1i128).into_val(&env),
+                fn_name: "mint_from_deposit",
+                args: (&user, &1i128, &deposit_id(&env, 1)).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .mint(&user, &1);
+        .mint_from_deposit(&user, &1, &deposit_id(&env, 1));
 }
 
 /// Mirrors `bridge_admin_cannot_authenticate_as_volume_limit_admin_after_rotation`:
@@ -397,7 +417,7 @@ fn upgraded_deployment_without_stored_minter_or_pauser_falls_back_to_admin() {
     assert_eq!(client.minter(), admin);
     assert_eq!(client.pauser(), admin);
 
-    client.mint(&user, &10);
+    client.mint_from_deposit(&user, &10, &deposit_id(&env, 1));
     assert_eq!(client.balance(&user), 10);
     client.set_paused(&true);
     assert!(client.paused());
@@ -428,7 +448,7 @@ fn every_role_can_be_a_contract_address_not_only_an_eoa() {
     assert_eq!(client.volume_limit_admin(), policy_contract);
 
     let user = Address::generate(&env);
-    client.mint(&user, &10);
+    client.mint_from_deposit(&user, &10, &deposit_id(&env, 1));
     assert_eq!(client.balance(&user), 10);
 }
 
@@ -524,14 +544,19 @@ proptest! {
     ) {
         let env = Env::default();
         let (client, _admin, users, destination) = property_setup(&env);
+        let mut mint_tag = 1u8;
 
         for operation in operations {
             match operation {
                 Op::Mint(user, amount) => {
-                    let _ = client.try_mint(&users[user as usize], &amount);
+                    let deposit = deposit_id(&env, mint_tag);
+                    mint_tag = mint_tag.wrapping_add(1);
+                    let _ = client.try_mint_from_deposit(&users[user as usize], &amount, &deposit);
                 }
                 Op::Burn(user, amount) => {
-                    let _ = client.try_burn(&users[user as usize], &amount, &destination);
+                    let redemption = redemption_id(&env, mint_tag);
+                    mint_tag = mint_tag.wrapping_add(1);
+                    let _ = client.try_burn(&users[user as usize], &amount, &destination, &redemption);
                 }
                 Op::Transfer(from, to, amount) => {
                     let owner = users[from as usize].clone();
@@ -551,7 +576,7 @@ proptest! {
         let env = Env::default();
         let (client, _admin, users, _destination) = property_setup(&env);
         let user = users[user_index as usize].clone();
-        client.mint(&user, &mint_amount);
+        client.mint_from_deposit(&user, &mint_amount, &deposit_id(&env, 1));
         let before = client.balance(&user);
 
         let _ = client.try_transfer(&user, &user, &transfer_amount);

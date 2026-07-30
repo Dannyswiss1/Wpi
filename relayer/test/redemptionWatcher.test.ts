@@ -56,6 +56,7 @@ function burnEvent(overrides: Partial<BurnEvent> = {}): BurnEvent {
     ledger: 100,
     txHash: 'stellar-tx-1',
     eventId: '0000000429496729600-0000000001',
+    redemptionId: 'redemption-1',
     nonce: 1,
     from: 'GBURN',
     amountStroops: '500',
@@ -86,7 +87,7 @@ describe('RedemptionWatcher', () => {
     contract.latestLedger = 100;
     const store = new MemoryStore();
     store.upsertRedemption({
-      redemptionId: burnEvent().eventId,
+      redemptionId: burnEvent().redemptionId,
       nonce: 1,
       amountStroops: '500',
       piDestination: 'GPI'.padEnd(56, 'A'),

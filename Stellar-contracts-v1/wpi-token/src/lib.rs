@@ -38,6 +38,7 @@ pub enum DataKey {
     Allowance(Address, Address),
     TotalSupply,
     ProcessedDeposit(BytesN<32>),
+    ProcessedRedemption(BytesN<32>),
     RedemptionNonce,
     VolumeLimitConfig,
     VolumeGeneration,
@@ -92,6 +93,7 @@ pub enum Error {
     InvalidAmount = 10,
     InvalidExpirationLedger = 11,
     NoProposedAdmin = 12,
+    RedemptionAlreadyProcessed = 13,
 }
 
 #[contractevent]
@@ -105,6 +107,7 @@ pub struct DepositMinted {
 #[contractevent]
 pub struct RedemptionBurned {
     #[topic]
+    pub redemption_id: BytesN<32>,
     pub nonce: u64,
     pub from: Address,
     pub amount: i128,
@@ -135,6 +138,19 @@ pub struct VolumeLimitsConfigured {
 pub struct VolumeLimitOverride {
     pub admin: Address,
     pub reset_at: u64,
+}
+
+fn is_redemption_processed(env: &Env, redemption_id: &BytesN<32>) -> bool {
+    env.storage()
+        .persistent()
+        .get::<DataKey, bool>(&DataKey::ProcessedRedemption(redemption_id.clone()))
+        .unwrap_or(false)
+}
+
+fn mark_redemption_processed(env: &Env, redemption_id: &BytesN<32>) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::ProcessedRedemption(redemption_id.clone()), &true);
 }
 
 #[contract]
@@ -717,28 +733,6 @@ impl WpiToken {
         Ok(true)
     }
 
-    /// Minter-gated mint. It uses the same bridge-wide mint counter as
-    /// `mint_from_deposit`, so no privileged mint path bypasses the cap.
-    pub fn mint(env: Env, to: Address, amount: i128) -> Result<bool, Error> {
-        require_minter(&env);
-        if is_paused(&env) {
-            return Err(Error::Paused);
-        }
-        if amount <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-        let balance = read_balance(&env, &to);
-        let supply = read_total_supply(&env);
-        let new_balance = balance.checked_add(amount).ok_or(Error::Overflow)?;
-        let new_supply = supply.checked_add(amount).ok_or(Error::Overflow)?;
-        if !record_bridge_volume(&env, symbol_short!("mint"), amount)? {
-            return Ok(false);
-        }
-        write_balance(&env, &to, new_balance);
-        write_total_supply(&env, new_supply);
-        Ok(true)
-    }
-
     pub fn is_deposit_processed(env: Env, pi_deposit_id: BytesN<32>) -> bool {
         is_deposit_processed(&env, &pi_deposit_id)
     }
@@ -784,6 +778,7 @@ impl WpiToken {
         from: Address,
         amount: i128,
         pi_destination: BytesN<32>,
+        redemption_id: BytesN<32>,
     ) -> Result<bool, Error> {
         require_minter(&env);
         if is_paused(&env) {
@@ -791,6 +786,9 @@ impl WpiToken {
         }
         if amount <= 0 {
             return Err(Error::InvalidAmount);
+        }
+        if is_redemption_processed(&env, &redemption_id) {
+            return Err(Error::RedemptionAlreadyProcessed);
         }
         let balance = read_balance(&env, &from);
         if balance < amount {
@@ -804,7 +802,9 @@ impl WpiToken {
         let nonce = next_redemption_nonce(&env)?;
         write_balance(&env, &from, balance - amount);
         write_total_supply(&env, new_supply);
+        mark_redemption_processed(&env, &redemption_id);
         RedemptionBurned {
+            redemption_id,
             nonce,
             from,
             amount,
