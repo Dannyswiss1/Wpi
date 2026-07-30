@@ -29,9 +29,10 @@ export interface WpiContractClient {
   isDepositProcessed(depositIdHex: string): Promise<boolean>;
 
   /**
-   * `redemption_burned` events emitted by `burn`, in ascending ledger order,
-   * starting at `sinceLedger` (inclusive). Returns the ledger to resume
-   * from on the next poll.
+   * `redemption_burned` events emitted by `burn`, keyed by their on-chain
+   * redemption ID and returned in ascending ledger order starting at
+   * `sinceLedger` (inclusive). Returns the ledger to resume from on the
+   * next poll.
    */
   getRedemptionBurnEvents(sinceLedger: number): Promise<{ events: BurnEvent[]; nextLedger: number }>;
 }

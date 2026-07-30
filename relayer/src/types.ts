@@ -52,6 +52,8 @@ export interface BurnEvent {
   txHash: string;
   /** RPC-assigned globally unique event id (encodes ledger/tx/op/event order). */
   eventId: string;
+  /** On-chain redemption ID supplied to `burn`; this is the relayer's dedupe key. */
+  redemptionId: string;
   /** Monotonic per-contract nonce assigned by the `burn` call. */
   nonce: number;
   /** Stellar address that burned wPi. */
@@ -64,7 +66,7 @@ export interface BurnEvent {
 export type RedemptionStatus = 'observed' | 'releasing' | 'released' | 'failed';
 
 export interface RedemptionRecord {
-  /** Same as the source `BurnEvent.eventId` — already globally unique. */
+  /** Same as the source `BurnEvent.redemptionId` — the on-chain dedupe key. */
   redemptionId: string;
   nonce: number;
   amountStroops: string;
