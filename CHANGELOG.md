@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Contracts (`wpi-token`)**: Configurable per-transaction mint ceiling
+  (`max_mint_per_tx`), enforced on `mint` and `mint_from_deposit` and owned by
+  the volume-limit admin. An over-cap mint is rejected without state changes
+  and publishes `MintTxCapExceeded`. Mints fail closed with
+  `MintTxCapNotConfigured` until the ceiling is configured ([#19](https://github.com/Pi-Defi-world/Wpi/issues/19)).
+
 ## [0.1.0] - 2026-07-28
 
 ### Added

@@ -24,7 +24,7 @@ remaining admin powers.
 | Admin | `Admin` | `propose_admin`/`accept_admin` (two-step), `upgrade` | Two-step: current admin proposes, proposed admin accepts |
 | Minter | `Minter` | `mint`, `mint_from_deposit`, `burn` | Current minter only, via `set_minter` |
 | Pauser | `Pauser` | `set_paused` | Current pauser only, via `set_pauser` |
-| Volume-limit admin | `VolumeLimitAdmin` | `configure_volume_limits`, `override_volume_limit`, `set_volume_limit_admin` | Current volume-limit admin only (pre-existing, unchanged) |
+| Volume-limit admin | `VolumeLimitAdmin` | `configure_volume_limits`, `configure_max_mint_per_tx`, `override_volume_limit`, `set_volume_limit_admin` | Current volume-limit admin only (pre-existing, unchanged) |
 
 All four roles default to the address passed to `initialize` and must be
 rotated independently by the deployer before routing real bridge traffic,
@@ -107,7 +107,7 @@ working through the migration window described above.
 |---|---|---|
 | Minter | Mint, mint-from-deposit, burn (bridge redemption) | Pause, reconfigure volume limits, transfer admin, upgrade |
 | Pauser | Halt/resume all token state changes (subject to the volume-limit circuit breaker) | Mint, burn, reconfigure volume limits, transfer admin, upgrade |
-| Volume-limit admin | Configure/override the mint & burn circuit breaker (unchanged from Issue #26) | Mint, burn, pause directly, transfer admin, upgrade |
+| Volume-limit admin | Configure/override the mint & burn circuit breaker (Issue #26) and the per-transaction mint cap (Issue #19) | Mint, burn, pause directly, transfer admin, upgrade |
 | Admin | Propose/accept admin transfer, upgrade the contract | Mint, burn, pause, or reclaim minter/pauser without their cooperation |
 
 A single compromised key now controls at most one of: minting, pausing,

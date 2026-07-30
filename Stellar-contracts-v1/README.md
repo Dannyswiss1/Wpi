@@ -60,7 +60,7 @@ kind of address a role holds; `require_auth()` is uniform for both.
 | Admin | `Admin` | `propose_admin`/`accept_admin` (two-step), `upgrade` | Two-step: current admin proposes, proposed admin accepts |
 | Minter | `Minter` | `mint`, `mint_from_deposit`, `burn` | Current minter only (`set_minter`) |
 | Pauser | `Pauser` | `set_paused` | Current pauser only (`set_pauser`) |
-| Volume-limit admin | `VolumeLimitAdmin` | `configure_volume_limits`, `override_volume_limit`, `set_volume_limit_admin` | Current volume-limit admin only |
+| Volume-limit admin | `VolumeLimitAdmin` | `configure_volume_limits`, `configure_max_mint_per_tx`, `override_volume_limit`, `set_volume_limit_admin` | Current volume-limit admin only |
 
 All four default to the deployer's admin identity at `initialize`. **Rotate
 each of them independently to dedicated multisig/governance addresses before
@@ -186,6 +186,35 @@ stellar contract invoke \
 unpauses the contract, and emits `VolumeLimitOverride`. Calling
 `set_paused(..., false)` while the circuit breaker is active is rejected, so
 the auditable override path cannot be bypassed.
+
+### Configure the per-transaction mint cap
+
+Independently of the rolling window, every mint is checked against
+`max_mint_per_tx`, so one compromised-key or relayer-bug call cannot mint an
+unbounded amount in a single transaction. Mints fail closed with
+`MintTxCapNotConfigured` until the ceiling is set, and the same volume-limit
+admin owns it:
+
+```bash
+stellar contract invoke \
+  --id "$WPI_CONTRACT_ID" \
+  --source "$MULTISIG_IDENTITY" \
+  --network testnet \
+  -- \
+  configure_max_mint_per_tx \
+  --max_mint_per_tx 100000000000
+```
+
+A mint above the ceiling returns `false` without changing balances, without
+consuming rolling-window capacity, and without marking its deposit processed
+(so it can be re-submitted if governance raises the ceiling). It publishes
+`MintTxCapExceeded { to, amount, max_mint_per_tx }`; as with the window
+alert, the call returns successfully at the transaction layer so the event is
+committed rather than rolled back. Unlike the window limit, an over-cap mint
+does **not** pause the bridge — it is a per-call input ceiling, while
+sustained over-minting is what the rolling window above is for. `mint` and
+`mint_from_deposit` are both gated, so no privileged path bypasses the cap.
+Read the current value with `max_mint_per_tx`.
 
 Set backend env:
 
