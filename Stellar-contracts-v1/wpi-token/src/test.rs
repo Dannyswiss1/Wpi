@@ -1,6 +1,9 @@
 use super::*;
 use proptest::prelude::*;
-use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::testutils::{
+    storage::{Instance as _, Persistent as _},
+    Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke,
+};
 use soroban_sdk::IntoVal;
 
 fn deposit_id(env: &Env, tag: u8) -> BytesN<32> {
@@ -162,6 +165,92 @@ fn rolling_window_does_not_expire_volume_early_at_bucket_boundary() {
 
     assert_eq!(client.current_volume_window().minted, 100);
     assert!(client.circuit_breaker_active());
+}
+
+#[test]
+fn user_state_is_persistent_and_gets_its_own_ttl() {
+    let env = Env::default();
+    let (_admin, client, user) = setup(&env, 1_000, 1_000, 86_400);
+    let spender = Address::generate(&env);
+
+    client.mint_from_deposit(&user, &25, &deposit_id(&env, 1));
+    client.approve(&user, &spender, &10, &(env.ledger().sequence() + 500));
+
+    env.as_contract(&client.address, || {
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get_ttl(&DataKey::Balance(user.clone())),
+            PERSISTENT_ENTRY_TTL_EXTEND_TO
+        );
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get_ttl(&DataKey::Allowance(user.clone(), spender.clone())),
+            PERSISTENT_ENTRY_TTL_EXTEND_TO
+        );
+    });
+}
+
+#[test]
+fn admin_can_refresh_instance_ttl_for_idle_periods() {
+    let env = Env::default();
+    let (_admin, client, _user) = setup(&env, 1_000, 1_000, 86_400);
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + INSTANCE_TTL_EXTEND_TO - 25);
+
+    env.as_contract(&client.address, || {
+        assert_eq!(env.storage().instance().get_ttl(), 25);
+    });
+
+    client.bump_instance_ttl();
+
+    env.as_contract(&client.address, || {
+        assert_eq!(env.storage().instance().get_ttl(), INSTANCE_TTL_EXTEND_TO);
+    });
+}
+
+#[test]
+fn an_older_balance_entry_expiring_does_not_wipe_newer_accounts() {
+    let env = Env::default();
+    let (_admin, client, user_a) = setup(&env, 1_000, 1_000, 86_400);
+    let user_b = Address::generate(&env);
+
+    client.mint_from_deposit(&user_a, &7, &deposit_id(&env, 1));
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + PERSISTENT_ENTRY_TTL_EXTEND_TO - 10);
+    client.mint_from_deposit(&user_b, &11, &deposit_id(&env, 2));
+
+    env.as_contract(&client.address, || {
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get_ttl(&DataKey::Balance(user_a.clone())),
+            10
+        );
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get_ttl(&DataKey::Balance(user_b.clone())),
+            PERSISTENT_ENTRY_TTL_EXTEND_TO
+        );
+    });
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 11);
+
+    assert_eq!(client.balance(&user_b), 11);
+
+    env.as_contract(&client.address, || {
+        assert!(
+            env.storage()
+                .persistent()
+                .get_ttl(&DataKey::Balance(user_b.clone()))
+                > PERSISTENT_ENTRY_TTL_THRESHOLD
+        );
+    });
 }
 
 #[test]

@@ -90,6 +90,42 @@ remain available. Only the authorized pauser can change the pause state; for a
 volume-limit halt, governance must use the auditable override flow described
 below before activity can resume.
 
+### Storage TTL / rent model
+
+`wpi-token` deliberately splits storage by lifecycle:
+
+| Data | Storage class | TTL strategy |
+|---|---|---|
+| `Balance(owner)`, `Allowance(owner, spender)`, processed deposit IDs, processed redemption IDs | Persistent | Each write extends that entry's TTL independently |
+| `Admin`, `ProposedAdmin`, `Minter`, `Pauser`, `VolumeLimitAdmin`, `Paused`, `CircuitBreaker`, `TotalSupply`, volume-window bookkeeping | Instance | The contract refreshes instance TTL on writes; operators must still bump it during long idle periods |
+
+This matters because Soroban `instance()` storage has a single shared TTL for
+the whole contract instance. If it is allowed to age out, every value stored in
+that namespace becomes unavailable together. User-owned balances and allowances
+therefore live in `persistent()` storage instead, so one stale account can no
+longer drag every holder over the same expiry cliff.
+
+For quiet periods, run an automated keeper or cron job that calls the admin-only
+`bump_instance_ttl` entrypoint before the shared instance TTL gets close to
+expiry. Example:
+
+```bash
+stellar contract invoke \
+  --id "$WPI_CONTRACT_ID" \
+  --source "$ADMIN_IDENTITY" \
+  --network testnet \
+  -- \
+  bump_instance_ttl
+```
+
+Recommended operations policy:
+
+- Trigger `bump_instance_ttl` on a schedule comfortably inside the rent window
+  even if no bridge traffic is flowing.
+- Monitor the contract instance TTL off-chain and alert well before expiry.
+- Keep rent funding and the admin signer used for this keeper path under the
+  same operational controls as upgrade governance.
+
 ### Configure the wPi bridge volume circuit breaker
 
 `wpi-token` fails closed: mint and burn calls return
