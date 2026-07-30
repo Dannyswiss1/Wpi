@@ -9,11 +9,16 @@
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, symbol_short, Address,
-    BytesN, Env, Symbol,
+    BytesN, Env, IntoVal, Symbol, Val,
 };
 
 const NAME: &str = "Wrapped Pi";
 const SYMBOL: &str = "wPI";
+const LEDGERS_PER_DAY: u32 = 17_280;
+const PERSISTENT_ENTRY_TTL_THRESHOLD: u32 = 30 * LEDGERS_PER_DAY;
+const PERSISTENT_ENTRY_TTL_EXTEND_TO: u32 = 180 * LEDGERS_PER_DAY;
+const INSTANCE_TTL_THRESHOLD: u32 = 7 * LEDGERS_PER_DAY;
+const INSTANCE_TTL_EXTEND_TO: u32 = 30 * LEDGERS_PER_DAY;
 /// Pi Network is an SCP fork of Stellar and exposes the same Horizon REST
 /// API. Native Pi amounts use 7 decimal places (1 Pi = 10_000_000 stroops),
 /// identical to Stellar's native asset convention.
@@ -148,13 +153,30 @@ fn is_redemption_processed(env: &Env, redemption_id: &BytesN<32>) -> bool {
 }
 
 fn mark_redemption_processed(env: &Env, redemption_id: &BytesN<32>) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::ProcessedRedemption(redemption_id.clone()), &true);
+    let key = DataKey::ProcessedRedemption(redemption_id.clone());
+    env.storage().persistent().set(&key, &true);
+    bump_persistent_ttl(env, &key);
 }
 
 #[contract]
 pub struct WpiToken;
+
+fn bump_instance_storage_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+}
+
+fn bump_persistent_ttl<K>(env: &Env, key: &K)
+where
+    K: IntoVal<Env, Val>,
+{
+    env.storage().persistent().extend_ttl(
+        key,
+        PERSISTENT_ENTRY_TTL_THRESHOLD,
+        PERSISTENT_ENTRY_TTL_EXTEND_TO,
+    );
+}
 
 fn read_admin(env: &Env) -> Address {
     env.storage()
@@ -196,6 +218,7 @@ fn write_volume_limit_admin(env: &Env, admin: &Address) {
     env.storage()
         .instance()
         .set(&DataKey::VolumeLimitAdmin, admin);
+    bump_instance_storage_ttl(env);
 }
 
 fn read_minter(env: &Env) -> Address {
@@ -218,6 +241,7 @@ fn require_minter(env: &Env) -> Address {
 
 fn write_minter(env: &Env, minter: &Address) {
     env.storage().instance().set(&DataKey::Minter, minter);
+    bump_instance_storage_ttl(env);
 }
 
 fn read_pauser(env: &Env) -> Address {
@@ -240,10 +264,12 @@ fn require_pauser(env: &Env) -> Address {
 
 fn write_pauser(env: &Env, pauser: &Address) {
     env.storage().instance().set(&DataKey::Pauser, pauser);
+    bump_instance_storage_ttl(env);
 }
 
 fn write_admin(env: &Env, admin: &Address) {
     env.storage().instance().set(&DataKey::Admin, admin);
+    bump_instance_storage_ttl(env);
 }
 
 fn read_proposed_admin(env: &Env) -> Option<Address> {
@@ -256,10 +282,12 @@ fn write_proposed_admin(env: &Env, proposed: &Address) {
     env.storage()
         .instance()
         .set(&DataKey::ProposedAdmin, proposed);
+    bump_instance_storage_ttl(env);
 }
 
 fn remove_proposed_admin(env: &Env) {
     env.storage().instance().remove(&DataKey::ProposedAdmin);
+    bump_instance_storage_ttl(env);
 }
 
 fn is_paused(env: &Env) -> bool {
@@ -271,6 +299,7 @@ fn is_paused(env: &Env) -> bool {
 
 fn set_paused(env: &Env, paused: bool) {
     env.storage().instance().set(&DataKey::Paused, &paused);
+    bump_instance_storage_ttl(env);
 }
 
 fn is_circuit_breaker_active(env: &Env) -> bool {
@@ -284,26 +313,35 @@ fn set_circuit_breaker(env: &Env, active: bool) {
     env.storage()
         .instance()
         .set(&DataKey::CircuitBreaker, &active);
+    bump_instance_storage_ttl(env);
 }
 
 fn read_balance(env: &Env, address: &Address) -> i128 {
+    let key = DataKey::Balance(address.clone());
     env.storage()
-        .instance()
-        .get::<DataKey, i128>(&DataKey::Balance(address.clone()))
+        .persistent()
+        .get::<DataKey, i128>(&key)
+        .or_else(|| env.storage().instance().get::<DataKey, i128>(&key))
         .unwrap_or(0)
 }
 
 fn write_balance(env: &Env, address: &Address, amount: i128) {
+    let key = DataKey::Balance(address.clone());
+    env.storage().persistent().set(&key, &amount);
+    bump_persistent_ttl(env, &key);
+    env.storage().instance().remove(&key);
+}
+
+fn read_allowance_data(env: &Env, owner: &Address, spender: &Address) -> Option<AllowanceData> {
+    let key = DataKey::Allowance(owner.clone(), spender.clone());
     env.storage()
-        .instance()
-        .set(&DataKey::Balance(address.clone()), &amount);
+        .persistent()
+        .get::<DataKey, AllowanceData>(&key)
+        .or_else(|| env.storage().instance().get::<DataKey, AllowanceData>(&key))
 }
 
 fn read_allowance(env: &Env, owner: &Address, spender: &Address) -> i128 {
-    let allowance = env
-        .storage()
-        .instance()
-        .get::<DataKey, AllowanceData>(&DataKey::Allowance(owner.clone(), spender.clone()));
+    let allowance = read_allowance_data(env, owner, spender);
     match allowance {
         Some(data) if data.expiration_ledger >= env.ledger().sequence() => data.amount,
         _ => 0,
@@ -317,13 +355,16 @@ fn write_allowance(
     amount: i128,
     expiration_ledger: u32,
 ) {
-    env.storage().instance().set(
-        &DataKey::Allowance(owner.clone(), spender.clone()),
+    let key = DataKey::Allowance(owner.clone(), spender.clone());
+    env.storage().persistent().set(
+        &key,
         &AllowanceData {
             amount,
             expiration_ledger,
         },
     );
+    bump_persistent_ttl(env, &key);
+    env.storage().instance().remove(&key);
 }
 
 fn read_total_supply(env: &Env) -> i128 {
@@ -335,6 +376,7 @@ fn read_total_supply(env: &Env) -> i128 {
 
 fn write_total_supply(env: &Env, amount: i128) {
     env.storage().instance().set(&DataKey::TotalSupply, &amount);
+    bump_instance_storage_ttl(env);
 }
 
 fn is_deposit_processed(env: &Env, deposit_id: &BytesN<32>) -> bool {
@@ -345,9 +387,9 @@ fn is_deposit_processed(env: &Env, deposit_id: &BytesN<32>) -> bool {
 }
 
 fn mark_deposit_processed(env: &Env, deposit_id: &BytesN<32>) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::ProcessedDeposit(deposit_id.clone()), &true);
+    let key = DataKey::ProcessedDeposit(deposit_id.clone());
+    env.storage().persistent().set(&key, &true);
+    bump_persistent_ttl(env, &key);
 }
 
 fn next_redemption_nonce(env: &Env) -> Result<u64, Error> {
@@ -360,6 +402,7 @@ fn next_redemption_nonce(env: &Env) -> Result<u64, Error> {
     env.storage()
         .instance()
         .set(&DataKey::RedemptionNonce, &next);
+    bump_instance_storage_ttl(env);
     Ok(next)
 }
 
@@ -384,6 +427,7 @@ fn advance_volume_generation(env: &Env) -> Result<u32, Error> {
     env.storage()
         .instance()
         .set(&DataKey::VolumeGeneration, &next);
+    bump_instance_storage_ttl(env);
     Ok(next)
 }
 
@@ -418,6 +462,7 @@ fn write_volume_bucket(env: &Env, bucket: &VolumeBucket) {
     env.storage()
         .instance()
         .set(&DataKey::VolumeBucket(slot), bucket);
+    bump_instance_storage_ttl(env);
 }
 
 fn read_volume_window(env: &Env, config: &VolumeLimitConfig) -> Result<VolumeWindow, Error> {
@@ -611,6 +656,7 @@ impl WpiToken {
         env.storage()
             .instance()
             .set(&DataKey::VolumeLimitConfig, &config);
+        bump_instance_storage_ttl(&env);
         VolumeLimitsConfigured {
             mint_limit,
             burn_limit,
@@ -687,8 +733,16 @@ impl WpiToken {
         transfer_internal(&env, &from, &to, amount)?;
         let expiration_ledger = env
             .storage()
-            .instance()
+            .persistent()
             .get::<DataKey, AllowanceData>(&DataKey::Allowance(from.clone(), spender.clone()))
+            .or_else(|| {
+                env.storage()
+                    .instance()
+                    .get::<DataKey, AllowanceData>(&DataKey::Allowance(
+                        from.clone(),
+                        spender.clone(),
+                    ))
+            })
             .map(|data| data.expiration_ledger)
             .unwrap_or(0);
         write_allowance(&env, &from, &spender, allowance - amount, expiration_ledger);
@@ -723,8 +777,16 @@ impl WpiToken {
         }
         let expiration_ledger = env
             .storage()
-            .instance()
+            .persistent()
             .get::<DataKey, AllowanceData>(&DataKey::Allowance(from.clone(), spender.clone()))
+            .or_else(|| {
+                env.storage()
+                    .instance()
+                    .get::<DataKey, AllowanceData>(&DataKey::Allowance(
+                        from.clone(),
+                        spender.clone(),
+                    ))
+            })
             .map(|data| data.expiration_ledger)
             .unwrap_or(0);
         write_allowance(&env, &from, &spender, allowance - amount, expiration_ledger);
@@ -862,6 +924,14 @@ impl WpiToken {
             return Err(Error::CircuitBreakerActive);
         }
         set_paused(&env, paused);
+        Ok(())
+    }
+
+    /// Admin-only keeper hook for periods where the contract is idle and
+    /// instance storage would not otherwise be refreshed by normal writes.
+    pub fn bump_instance_ttl(env: Env) -> Result<(), Error> {
+        require_admin(&env);
+        bump_instance_storage_ttl(&env);
         Ok(())
     }
 
