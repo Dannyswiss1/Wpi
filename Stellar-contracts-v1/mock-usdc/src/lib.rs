@@ -1,16 +1,15 @@
 #![no_std]
 
-//! Wrapped Pi (wPi) — Soroban token on **Stellar** testnet/mainnet.
-//! Mint/burn is admin-only; the cross-chain relayer mints wPi after Pi deposits
-//! are observed on Pi Network. Same interface shape as `pusd-token` for SDK compatibility.
+//! Mock USDC for Stellar testnet — same admin-mint token interface as wPi / PUSD.
+//! Use only for DEX / reserve simulations; production reserves use real USDC.
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, BytesN, Env,
 };
 
-const NAME: &str = "Wrapped Pi";
-const SYMBOL: &str = "wPI";
-/// 7 decimals to match native Pi stroops convention (1e7).
+const NAME: &str = "Mock USDC";
+const SYMBOL: &str = "mUSDC";
+/// 7 decimals (Stellar-style); align pools with wPi.
 pub const DECIMALS: u32 = 7;
 
 #[contracttype]
@@ -33,7 +32,7 @@ pub enum Error {
 }
 
 #[contract]
-pub struct WpiToken;
+pub struct MockUsdcToken;
 
 fn read_admin(env: &Env) -> Address {
     env.storage()
@@ -98,7 +97,7 @@ fn write_total_supply(env: &Env, amount: i128) {
 }
 
 #[contractimpl]
-impl WpiToken {
+impl MockUsdcToken {
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialized");
