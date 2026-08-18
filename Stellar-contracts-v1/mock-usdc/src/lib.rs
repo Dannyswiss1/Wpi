@@ -145,6 +145,8 @@ impl MockUsdcToken {
         }
         owner.require_auth();
         write_allowance(&env, &owner, &spender, amount);
+        env.events()
+            .publish(("approve", owner.clone(), spender.clone()), amount);
         Ok(())
     }
 
@@ -186,6 +188,8 @@ impl MockUsdcToken {
         let to_balance = read_balance(env, to);
         write_balance(env, from, from_balance - amount);
         write_balance(env, to, to_balance + amount);
+        env.events()
+            .publish(("transfer", from.clone(), to.clone()), amount);
         Ok(())
     }
 
@@ -202,6 +206,8 @@ impl MockUsdcToken {
         let total = read_total_supply(&env);
         write_balance(&env, &to, to_balance + amount);
         write_total_supply(&env, total + amount);
+        env.events()
+            .publish(("mint", admin.clone(), to.clone()), amount);
         Ok(())
     }
 
@@ -221,6 +227,8 @@ impl MockUsdcToken {
         let total = read_total_supply(&env);
         write_balance(&env, &from, from_balance - amount);
         write_total_supply(&env, total - amount);
+        env.events()
+            .publish(("burn", admin.clone(), from.clone()), amount);
         Ok(())
     }
 
