@@ -4,7 +4,7 @@
 //! Use only for DEX / reserve simulations; production reserves use real USDC.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, BytesN, Env,
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
 };
 
 const NAME: &str = "Mock USDC";
@@ -29,6 +29,50 @@ pub enum Error {
     Paused = 2,
     InsufficientBalance = 3,
     InsufficientAllowance = 4,
+}
+
+/// Topics: `("transfer", from, to)`, data: `amount`.
+#[contractevent(data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Transfer {
+    #[topic]
+    pub from: Address,
+    #[topic]
+    pub to: Address,
+    pub amount: i128,
+}
+
+/// Topics: `("mint", admin, to)`, data: `amount`.
+#[contractevent(data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Mint {
+    #[topic]
+    pub admin: Address,
+    #[topic]
+    pub to: Address,
+    pub amount: i128,
+}
+
+/// Topics: `("burn", admin, from)`, data: `amount`.
+#[contractevent(data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Burn {
+    #[topic]
+    pub admin: Address,
+    #[topic]
+    pub from: Address,
+    pub amount: i128,
+}
+
+/// Topics: `("approve", owner, spender)`, data: `amount`.
+#[contractevent(data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Approve {
+    #[topic]
+    pub owner: Address,
+    #[topic]
+    pub spender: Address,
+    pub amount: i128,
 }
 
 #[contract]
@@ -79,10 +123,7 @@ fn read_allowance(env: &Env, from: &Address, spender: &Address) -> i128 {
 fn write_allowance(env: &Env, from: &Address, spender: &Address, amount: i128) {
     env.storage()
         .instance()
-        .set(
-            &DataKey::Allowance(from.clone(), spender.clone()),
-            &amount,
-        );
+        .set(&DataKey::Allowance(from.clone(), spender.clone()), &amount);
 }
 
 fn read_total_supply(env: &Env) -> i128 {
@@ -145,8 +186,12 @@ impl MockUsdcToken {
         }
         owner.require_auth();
         write_allowance(&env, &owner, &spender, amount);
-        env.events()
-            .publish(("approve", owner.clone(), spender.clone()), amount);
+        Approve {
+            owner: owner.clone(),
+            spender: spender.clone(),
+            amount,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -177,7 +222,12 @@ impl MockUsdcToken {
         Self::transfer_internal(&env, &from, &to, amount)
     }
 
-    fn transfer_internal(env: &Env, from: &Address, to: &Address, amount: i128) -> Result<(), Error> {
+    fn transfer_internal(
+        env: &Env,
+        from: &Address,
+        to: &Address,
+        amount: i128,
+    ) -> Result<(), Error> {
         if amount < 0 {
             return Err(Error::InsufficientBalance);
         }
@@ -188,8 +238,12 @@ impl MockUsdcToken {
         let to_balance = read_balance(env, to);
         write_balance(env, from, from_balance - amount);
         write_balance(env, to, to_balance + amount);
-        env.events()
-            .publish(("transfer", from.clone(), to.clone()), amount);
+        Transfer {
+            from: from.clone(),
+            to: to.clone(),
+            amount,
+        }
+        .publish(env);
         Ok(())
     }
 
@@ -206,8 +260,12 @@ impl MockUsdcToken {
         let total = read_total_supply(&env);
         write_balance(&env, &to, to_balance + amount);
         write_total_supply(&env, total + amount);
-        env.events()
-            .publish(("mint", admin.clone(), to.clone()), amount);
+        Mint {
+            admin: admin.clone(),
+            to: to.clone(),
+            amount,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -227,8 +285,12 @@ impl MockUsdcToken {
         let total = read_total_supply(&env);
         write_balance(&env, &from, from_balance - amount);
         write_total_supply(&env, total - amount);
-        env.events()
-            .publish(("burn", admin.clone(), from.clone()), amount);
+        Burn {
+            admin: admin.clone(),
+            from: from.clone(),
+            amount,
+        }
+        .publish(&env);
         Ok(())
     }
 

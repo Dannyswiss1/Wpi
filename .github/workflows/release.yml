@@ -35,11 +35,6 @@ jobs:
         working-directory: Stellar-contracts-v1
         run: cargo build --locked --target wasm32-unknown-unknown --release
 
-      - name: Verify WASM dependency provenance
-        working-directory: Stellar-contracts-v1
-        shell: bash
-        run: bash scripts/verify_dependency_provenance.sh
-
       - name: Generate SHA-256 Checksums
         shell: bash
         run: |

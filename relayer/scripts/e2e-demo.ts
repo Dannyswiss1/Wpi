@@ -150,6 +150,7 @@ async function main(): Promise<void> {
     ledger: contractClient.ledger,
     txHash: 'demo-burn-tx',
     eventId: 'demo-burn-event-1',
+    redemptionId: 'demo-redemption-1',
     nonce: 1,
     from: DESTINATION_STELLAR_ADDRESS,
     amountStroops: '100000000', // 10 Pi
